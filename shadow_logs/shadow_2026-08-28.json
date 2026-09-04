@@ -1,0 +1,201 @@
+{
+  "date": "2026-08-28",
+  "market_context": {
+    "bias": "CHOPPY",
+    "nifty_ltp": 24148.0,
+    "vwap": 24143.77,
+    "day_range_pct": 0.25,
+    "trending": false
+  },
+  "decisions": [
+    {
+      "ticker": "INFY",
+      "sid": "1594",
+      "ltp": 1139.6,
+      "prev_close": 1110.8,
+      "gap_pct": 1.15,
+      "orb_high": 1140.9,
+      "orb_low": 1123.3,
+      "orb_range_pct": 1.57,
+      "breakout": false,
+      "vol_confirm": false,
+      "above_vwap": true,
+      "body_ratio": 0.7,
+      "score": 20,
+      "entry_price": 1142.04,
+      "sl_price": 1123.3,
+      "target_1r": 1160.78,
+      "target_2r": 1179.52,
+      "qty": 54,
+      "action": "SHORTLISTED"
+    },
+    {
+      "ticker": "TCS",
+      "sid": "11536",
+      "ltp": 2328.6,
+      "prev_close": 2248.4,
+      "gap_pct": 1.05,
+      "orb_high": 2320.5,
+      "orb_low": 2263.3,
+      "orb_range_pct": 2.53,
+      "breakout": true,
+      "vol_confirm": false,
+      "above_vwap": true,
+      "body_ratio": 0.58,
+      "score": 60,
+      "entry_price": 2322.82,
+      "sl_price": 2263.3,
+      "target_1r": 2382.34,
+      "target_2r": 2441.86,
+      "qty": 17,
+      "action": "SHORTLISTED"
+    },
+    {
+      "ticker": "WIPRO",
+      "action": "REJECT",
+      "reason": "Weak first candle (doji): body=40%",
+      "body_ratio": 0.3999999999999962
+    },
+    {
+      "ticker": "HCLTECH",
+      "sid": "7229",
+      "ltp": 1328.4,
+      "prev_close": 1282.0,
+      "gap_pct": 0.62,
+      "orb_high": 1316.8,
+      "orb_low": 1290.0,
+      "orb_range_pct": 2.08,
+      "breakout": true,
+      "vol_confirm": false,
+      "above_vwap": true,
+      "body_ratio": 0.8,
+      "score": 70,
+      "entry_price": 1318.12,
+      "sl_price": 1290.0,
+      "target_1r": 1346.23,
+      "target_2r": 1374.35,
+      "qty": 36,
+      "action": "SHORTLISTED"
+    },
+    {
+      "ticker": "SBIN",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.30%",
+      "gap": 0.2972480582989653
+    },
+    {
+      "ticker": "ICICIBANK",
+      "action": "REJECT",
+      "reason": "Negative gap: -0.55% (long only)",
+      "gap": -0.5544005544005544
+    },
+    {
+      "ticker": "AXISBANK",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "KOTAKBANK",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.09%",
+      "gap": 0.09429514380010234
+    },
+    {
+      "ticker": "M&M",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.03%",
+      "gap": 0.03003003003003003
+    },
+    {
+      "ticker": "ADANIENT",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.03%",
+      "gap": 0.03155569580309246
+    },
+    {
+      "ticker": "ADANIPORTS",
+      "action": "REJECT",
+      "reason": "Gap too small: -0.12%",
+      "gap": -0.11668611435239205
+    },
+    {
+      "ticker": "RELIANCE",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.21%",
+      "gap": 0.21057557323350845
+    },
+    {
+      "ticker": "TATAPOWER",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.00%",
+      "gap": 0.0
+    },
+    {
+      "ticker": "SUNPHARMA",
+      "sid": "3351",
+      "ltp": 1911.1,
+      "prev_close": 1913.3,
+      "gap_pct": 0.61,
+      "orb_high": 1925.0,
+      "orb_low": 1903.8,
+      "orb_range_pct": 1.11,
+      "breakout": false,
+      "vol_confirm": false,
+      "above_vwap": false,
+      "body_ratio": 0.74,
+      "score": 10,
+      "entry_price": 1926.92,
+      "sl_price": 1903.8,
+      "target_1r": 1950.05,
+      "target_2r": 1973.17,
+      "qty": 44,
+      "action": "SHORTLISTED"
+    },
+    {
+      "ticker": "DRREDDY",
+      "action": "REJECT",
+      "reason": "Gap too small: -0.17%",
+      "gap": -0.16992353440951571
+    },
+    {
+      "ticker": "TATASTEEL",
+      "action": "REJECT",
+      "reason": "Gap too small: 0.43%",
+      "gap": 0.4282655246252585
+    },
+    {
+      "ticker": "HINDALCO",
+      "action": "REJECT",
+      "reason": "ORB range too tight: 0.52%",
+      "orb_range": 0.5208840424496287
+    },
+    {
+      "ticker": "JSWSTEEL",
+      "action": "REJECT",
+      "reason": "Gap too small: -0.17%",
+      "gap": -0.17196261682242653
+    },
+    {
+      "ticker": "BEL",
+      "action": "REJECT",
+      "reason": "Gap too small: -0.04%",
+      "gap": -0.03649635036495797
+    },
+    {
+      "ticker": "APOLLOTYRE",
+      "action": "REJECT",
+      "reason": "Weak first candle (doji): body=49%",
+      "body_ratio": 0.4943820224719216
+    },
+    {
+      "action": "NO_TRADE",
+      "reason": "Choppy market - expert sits out"
+    }
+  ],
+  "candidates_count": 4,
+  "best_pick": null,
+  "trade_result": {
+    "status": "NO_TRADE",
+    "reason": "CHOPPY"
+  }
+}

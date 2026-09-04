@@ -1,0 +1,2 @@
+scan_time,symbol,security_id,side,score,ltp,gap_pct,rs,rvol,vwap,momentum_5m,momentum_15m,atr_pct,setup_type,regime,nifty
+2026-08-19T11:13:34+05:30,RSYSTEMS,13414,,75.65656703026107,239.0,0.0,-1.3619479983491585,4.066941683855241,0.0,-0.5414410662224034,-0.7481296758104716,0.0,,,0.0

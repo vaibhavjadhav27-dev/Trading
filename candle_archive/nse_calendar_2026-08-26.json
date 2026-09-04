@@ -1,0 +1,109 @@
+{
+  "date": "2026-08-26",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "desc": "Resignation",
+      "an_dt": "26-Aug-2026 18:59:54",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "desc": "Appointment",
+      "an_dt": "26-Aug-2026 18:58:38",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TEAMLEASE",
+      "company": "Teamlease Services Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "26-Aug-2026 18:57:03",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "desc": "General Updates",
+      "an_dt": "26-Aug-2026 18:56:12",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "desc": "Outcome of Board Meeting",
+      "an_dt": "26-Aug-2026 18:54:26",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "desc": "Outcome of Board Meeting",
+      "an_dt": "26-Aug-2026 18:52:37",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "desc": "Appointment",
+      "an_dt": "26-Aug-2026 18:51:53",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "desc": "Resignation",
+      "an_dt": "26-Aug-2026 18:51:53",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "desc": "Change in Director(s)",
+      "an_dt": "26-Aug-2026 18:51:53",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TATAPOWER",
+      "company": "Tata Power Company Limited",
+      "desc": "Pendency of Litigation(s)/dispute(s) or the outcome impacting the Company",
+      "an_dt": "26-Aug-2026 18:50:33",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "GENUSPOWER",
+      "company": "Genus Power Infrastructures Limited",
+      "purpose": "Dividend",
+      "date": "27-Aug-2026"
+    },
+    {
+      "symbol": "MAXESTATES",
+      "company": "Max Estates Limited",
+      "purpose": "Fund Raising",
+      "date": "28-Aug-2026"
+    },
+    {
+      "symbol": "CANFINHOME",
+      "company": "Can Fin Homes Limited",
+      "purpose": "Fund Raising",
+      "date": "29-Aug-2026"
+    },
+    {
+      "symbol": "KIRIINDUS",
+      "company": "Kiri Industries Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "31-Aug-2026"
+    },
+    {
+      "symbol": "PVRINOX",
+      "company": "PVR INOX Limited",
+      "purpose": "Buyback",
+      "date": "31-Aug-2026"
+    }
+  ]
+}

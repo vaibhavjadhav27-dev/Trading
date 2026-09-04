@@ -1,0 +1,21 @@
+[Unit]
+Description=V8.2 Final Dhan NSE Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bot
+Environment=PYTHONUNBUFFERED=1
+Environment=V82_DRY_RUN=0
+Environment=V82_ENFORCE_STATIC_IP=1
+Environment=V82_RUN_POSTMARKET_HOOKS=0
+ExecStart=/home/ubuntu/trading-bot/venv/bin/python3 /home/ubuntu/trading-bot/trading_bot_v82.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/ubuntu/trading-bot/logs/v82_live.log
+StandardError=append:/home/ubuntu/trading-bot/logs/v82_live.log
+
+[Install]
+WantedBy=multi-user.target

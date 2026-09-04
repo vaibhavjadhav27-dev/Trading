@@ -1,0 +1,53 @@
+# ═══ DAILY MAINTENANCE ═══
+0 0 * * * cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 log_cleanup.py >> /dev/null 2>&1
+
+# ═══ PRE-MARKET ═══
+# 08:28 IST — NTP clock sync (prevents TOTP failure)
+58 2 * * 1-5 sudo ntpdate -u pool.ntp.org >> /dev/null 2>&1
+# 08:30 IST — Token refresh
+0 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 token_refresher.py >> /home/ubuntu/trading-bot/logs/token_refresher.log 2>&1
+# 08:40 IST — Prev session close
+10 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 save_prev_session_close.py >> prev_close_refresh.log 2>&1
+# 08:43 IST — Sector prev close
+13 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 save_sector_prev_close.py >> /home/ubuntu/trading-bot/logs/sector_prev_close.log 2>&1
+# 08:50 IST — NSE ORB bot start
+20 3 * * 1-5 sudo systemctl restart trading-bot >> /tmp/bot_start.log 2>&1
+# 09:00 IST — Stock metrics (FILTERS_V2 EMA data)
+30 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 update_stock_metrics.py >> /tmp/stock_metrics.log 2>&1
+# 09:15 IST — Swing monitor (market hours)
+45 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 swing_monitor.py >> logs/swing_monitor.log 2>&1
+# 09:50 IST — Shadow trader
+20 4 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 shadow_trader.py >> shadow_trade.log 2>&1
+
+# ═══ POST-MARKET ═══
+# 15:30 IST — Download bhavcopy
+0 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 download_bhavcopy.py >> logs/bhavcopy.log 2>&1
+# 15:45 IST — Save candle data
+15 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 save_candle_data.py >> /dev/null 2>&1
+# 15:50 IST — Append daily closes
+20 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 append_daily_closes.py >> /home/ubuntu/trading-bot/logs/append_daily_closes.log 2>&1
+# 16:00 IST — Market intel + post market + shadow compare
+30 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 market_intel.py >> /home/ubuntu/trading-bot/logs/market_intel.log 2>&1
+30 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 post_market_analysis.py >> post_market.log 2>&1
+30 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 shadow_compare.py >> shadow_compare.log 2>&1
+# 16:05 IST — Observation tracker
+35 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 observation_tracker.py >> /home/ubuntu/trading-bot/logs/observation_tracker.log 2>&1
+# 16:10 IST — Trading dashboard
+40 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 trading_dashboard.py >> /home/ubuntu/trading-bot/logs/trading_dashboard.log 2>&1
+# 16:15 IST — Catalyst engine
+45 10 * * 1-5 cd /home/ubuntu/trading-bot && PYTHONPATH=. /home/ubuntu/trading-bot/venv/bin/python3 catalyst_engine.py >> logs/catalyst_engine.log 2>&1
+# 17:00 IST — Weekly market intel (Fridays)
+30 11 * * 5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 market_intel.py weekly >> /home/ubuntu/trading-bot/logs/market_intel_weekly.log 2>&1
+# 18:00 IST — Study archive (Fridays)
+30 12 * * 5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 study_archive.py >> /dev/null 2>&1
+
+# ═══ EVENING — MCX + SWING + YF ═══
+# 19:00 IST — MCX shadow session start + swing daily + YF history
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 mcx_shadow_trader.py >> logs/mcx_shadow.log 2>&1
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 swing_daily.py >> logs/swing_daily.log 2>&1
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 pull_yf_history.py >> logs/yf_history.log 2>&1
+# 23:00 IST — MCX session close
+30 17 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 mcx_shadow_trader.py --close >> logs/mcx_shadow.log 2>&1
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && venv/bin/python3 download_nse_calendar.py >> logs/nse_calendar.log 2>&1
+30 12 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 download_nse_calendar.py >> /tmp/nse_calendar.log 2>&1
+*/15 4-8 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 nifty_regime_scanner.py >> /tmp/regime_scanner.log 2>&1

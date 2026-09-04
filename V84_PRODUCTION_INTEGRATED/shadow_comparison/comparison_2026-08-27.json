@@ -1,0 +1,29 @@
+[
+  {
+    "engine": "NSE_INTRADAY",
+    "starting_capital": 90334.91,
+    "net_pnl": 0.0,
+    "return_pct": 0.0,
+    "trades": 0,
+    "win_rate_pct": 0,
+    "fees": 0.0
+  },
+  {
+    "engine": "MCX_SHADOW",
+    "starting_capital": 90334.91,
+    "net_pnl": 0.0,
+    "return_pct": 0.0,
+    "trades": 0,
+    "win_rate_pct": 0,
+    "fees": 0.0
+  },
+  {
+    "engine": "SWING_SHADOW",
+    "starting_capital": 90334.91,
+    "net_pnl": 0.0,
+    "return_pct": 0.0,
+    "trades": 0,
+    "win_rate_pct": 0,
+    "fees": 0.0
+  }
+]

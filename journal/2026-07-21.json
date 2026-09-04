@@ -1,0 +1,22 @@
+{
+  "trade": {
+    "exit": {
+      "symbol": "UBL",
+      "security_id": "16713",
+      "entry_price": "1395.7",
+      "qty": "21",
+      "sl": "1354.51",
+      "r_value": "41.19",
+      "max_price": "1418.8",
+      "trailing_sl": "1354.51",
+      "phase": "INITIAL",
+      "score": "1.5833",
+      "tier": "CURATED",
+      "entry_time": "2026-07-21T09:49:44.249313",
+      "order_id": "321260721188603",
+      "expected_entry": "1395.7",
+      "entry_slippage": "0.0",
+      "position_id": "CURRENT"
+    }
+  }
+}

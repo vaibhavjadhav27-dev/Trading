@@ -1,0 +1,17 @@
+# V8.2 FINAL — IST cron (server timezone should be Asia/Kolkata or use TZ explicitly)
+# Token refresh at 08:30 IST via direct Dhan v2 TOTP endpoint.
+30 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 token_refresher_v82.py >> logs/token_v82.log 2>&1
+# Previous-session close and sector cache.
+40 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 save_prev_session_close.py >> logs/prev_close.log 2>&1
+43 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 save_sector_prev_close.py >> logs/sector_prev_close.log 2>&1
+# Start canonical V8.2 service at 08:50 IST.
+50 3 * * 1-5 sudo systemctl restart trading-bot-v82
+# Swing monitor / shadow tasks remain separate from intraday execution.
+45 3 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 swing_monitor.py >> logs/swing_monitor.log 2>&1
+# Post-market research / AI / swing / MCX.
+30 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 market_intel.py >> logs/market_intel.log 2>&1
+30 10 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 post_market_analysis.py >> logs/post_market.log 2>&1
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 swing_daily.py >> logs/swing_daily.log 2>&1
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 mcx_shadow_trader.py >> logs/mcx_shadow.log 2>&1
+30 13 * * 1-5 cd /home/ubuntu/trading-bot && /home/ubuntu/trading-bot/venv/bin/python3 pull_yf_history.py >> logs/yf_history.log 2>&1
+# Do not schedule trading_bot.py separately: V8.2 service is the sole live order path.

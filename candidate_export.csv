@@ -1,0 +1,2 @@
+action,atr,atr_expansion,avg_volume_20d,date,ema21,ema9,gap_pct,ltp,market_regime,orb_high,orb_low,orb_range_pct,prev_close,rs_score,rsi,rvol,scan_time,score,sector,sector_rank,supertrend_dir,ticker,ticker_time,tier,trend_quality,turnover_cr,volume,vwap,vwap_distance_pct
+SHORTLISTED,0.0,0.0,0.0,2026-06-26,0.0,0.0,3.5,0.0,BULLISH,0.0,0.0,0.0,0.0,0.0,0.0,2.1,0931,0.85,UNKNOWN,0.0,0.0,TEST,TEST_'0000',TIER1,0.0,0.0,0.0,0.0,0.0

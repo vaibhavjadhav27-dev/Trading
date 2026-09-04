@@ -1,0 +1,1049 @@
+#!/usr/bin/env python3
+"""V8.4 production integration.
+
+Preserves the proven V8.2 Dhan gateway/orchestration and replaces only the
+entry decision, sizing, confirmation and profit-management layers.
+
+LIVE IS EXPLICIT: V84_ENABLE_LIVE=1 is required in addition to V82_DRY_RUN=0.
+"""
+from __future__ import annotations
+import json, os, time, logging
+try:
+    from v84_trade_logger import log_entry, log_exit, log_scan_cycle, cleanup_old_logs
+    cleanup_old_logs()
+except ImportError:
+    log_entry=log_exit=log_scan_cycle=cleanup_old_logs=lambda *a,**k:None
+try:
+    from V85_1_PATCH import (install_gateway_patch, safe_place_hard_sl, safe_reconcile,
+        allocate_batch, execute_entry_allocated, desired_trailing_stop, modify_pending_sl,
+        V851Config, size_candidate)
+    _V851_LOADED = True
+except ImportError as _e:
+    log.warning(f"V8.5.1 patch not loaded: {_e}")
+    _V851_LOADED = False
+try:
+    from v853_profit_engine_patch import (V853EntryEngine, ExitEngine, Position as V853Position,
+        Candidate as V853Candidate, EntryAction, ExitAction, recover_stop_after_dhan_rejection,
+        structural_stop, rank_actionable)
+    _V853_LOADED = True
+    _v853_entry = V853EntryEngine()
+    _v853_exit = ExitEngine()
+    pass  # V8.5.3 loaded (log not yet available)
+except ImportError as _e:
+    log.warning(f"V8.5.3 strategy not loaded: {_e}")
+    _V853_LOADED = False
+from datetime import datetime
+from pathlib import Path
+from trading_bot_v82 import TradingBotV82, now_ist, ist_time, _event
+from v84_strategy import final_decision
+from V10_1_STRATEGY_PATCH import (
+    acceleration_score, update_peak,
+    validate_entry, ExitState, EarlyConfig
+)
+from v12_exit_engine import profit_fading_exit
+# V12 Independent Scoring (P0-2)
+try:
+    from v12_independent_scoring import V12IndependentScorer
+    _v12_scorer = V12IndependentScorer()
+    _V12_INDEPENDENT = True
+except ImportError:
+    _V12_INDEPENDENT = False
+
+# V12 Early Discovery
+try:
+    from v12_early_discovery import EarlyDiscoveryEngine
+    _V12_DISCOVERY = True
+except ImportError:
+    _V12_DISCOVERY = False
+  # V12: volatility-adjusted exit
+
+# V10.1 Universe Scanner (tradability gate)
+try:
+    from nse_universe_scanner import tradability_gate, LiveTick, MIN_PRICE, MAX_PRICE
+    _UNIVERSE_GATE_ACTIVE = True
+except ImportError:
+    _UNIVERSE_GATE_ACTIVE = False
+
+from v84.config import RISK, INTRADAY
+from v84.indicators import vwap
+from V854_UNIFIED_PATCH import (structural_stop as v854_structural_stop, broker_valid_trigger, trail_trigger as v854_trail_trigger, evaluate_profit_exit as v854_evaluate_profit_exit, reconcile_broker as v854_reconcile_broker, install_protective_sl as v854_install_protective_sl, modify_sl as v854_modify_sl, validate_entry_audit as v854_validate_entry_audit, append_audit_event as v854_append_audit, correlation_id as v854_correlation_id)
+from execution_integrity import ExecutionIntegrity, OrderState, StopLossBuilder
+
+# --- V12 Shadow Strategy (expert hardened patch) ---
+try:
+    from V11_V12_HARDENED_COMBINED_PATCH import EntryStateEngine as V12Engine, Market as V12Market, Side as V12Side, Candidate as V12Candidate
+    from v12_shadow_adapter import v12_shadow_evaluate, build_v12_candidate
+    _v12_engine = V12Engine()
+    _V12_AVAILABLE = True
+except Exception as _v12e:
+    _V12_AVAILABLE = False
+    _v12_engine = None
+# --- end V12 Shadow ---
+from v11_observability import ObservabilityEngine
+from v11_candidate_intelligence import CandidateManager
+
+log=logging.getLogger("V84_PROD")
+RISK_FILE=Path("v84_daily_risk.json")
+
+class TradingBotV84(TradingBotV82):
+    def __init__(self,dry_run=False):
+        super().__init__(dry_run=dry_run)
+        if os.getenv("V84_ENABLE_LIVE","0")!="1":
+            self.dry_run=True
+        self._load_v84_risk()
+        try:
+            _src=Path(__file__).resolve(); _src_sha=__import__("hashlib").sha256(_src.read_bytes()).hexdigest()
+            log.info("RELEASE_ID version=V84_HARDENED source=%s sha256=%s pid=%s",_src,_src_sha,os.getpid())
+        except Exception as _release_e: log.warning("RELEASE_ID unavailable: %s",_release_e)
+        log.info("V10.1 active (ATR-normalized, anti-chase, giveback exits)")
+        # Production compatibility check: validate the actual imported dict interface.
+        try:
+            import inspect as _insp
+            _pfe_params=list(_insp.signature(profit_fading_exit).parameters.keys())
+            if _pfe_params != ["snapshot_dict"]:
+                raise RuntimeError(f"profit_fading_exit contract mismatch: {_pfe_params}")
+            _pfe_probe=profit_fading_exit({"symbol":"BOOT_PROBE","side":"LONG","price":100.0,"entry_price":100.0,"sl":99.0,"initial_sl":99.0,"peak":100.0,"best_r":0.0,"qty":1,"entry_type":"NORMAL","position_pct":1.0,"confirmed":True})
+            if not isinstance(_pfe_probe,dict): raise RuntimeError("profit_fading_exit probe did not return dict")
+            log.info("profit_fading_exit contract verified: %s",_pfe_params)
+        except Exception as _e5:
+            log.critical("STARTUP BLOCKED: profit_fading_exit compatibility failed: %s",_e5)
+            raise
+
+
+        # V8.6.0 Execution Integrity
+        try:
+            self.ei = ExecutionIntegrity(self.dhan, self)
+            log.info('ExecutionIntegrity V8.6.0 initialized')
+        except Exception as _ei_e:
+            log.critical('STARTUP BLOCKED: ExecutionIntegrity failed: %s', _ei_e)
+            raise RuntimeError('Refusing live startup without ExecutionIntegrity') from _ei_e
+        # V12 Early Discovery
+        self.discovery = None
+        if _V12_DISCOVERY:
+            try:
+                self.discovery = EarlyDiscoveryEngine(min_bars=5)
+                log.info('V12 Early Discovery initialized')
+            except Exception as _de:
+                log.warning(f'V12 Discovery init failed: {_de}')
+
+
+        # V11 Observability Engine
+        try:
+            _obs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'v11_data')
+            self.obs = ObservabilityEngine(base_path=_obs_path)
+            log.info('V11 ObservabilityEngine initialized (ledger: %s)', _obs_path)
+        except Exception as _obs_e:
+            log.error('V11 ObservabilityEngine init failed: %s', _obs_e)
+            self.obs = None
+
+        # V11 Candidate Intelligence
+        try:
+            self.cm = CandidateManager(base_path=_obs_path if self.obs else None)
+            log.info('V11 CandidateManager initialized')
+        except Exception as _cm_e:
+            log.error('V11 CandidateManager init failed: %s', _cm_e)
+            self.cm = None
+
+    def _load_v84_risk(self):
+        today=now_ist().date().isoformat()
+        try:
+            x=json.loads(RISK_FILE.read_text())
+            self.v84_risk=x if x.get("date")==today else {"date":today,"realized_pnl":0.0,"consecutive_losses":0}
+        except Exception:
+            self.v84_risk={"date":today,"realized_pnl":0.0,"consecutive_losses":0}
+        RISK_FILE.write_text(json.dumps(self.v84_risk,indent=2))
+
+    def _save_v84_risk(self):
+        RISK_FILE.write_text(json.dumps(self.v84_risk,indent=2,default=str))
+
+    def _daily_allowed(self):
+        bal=max(float(self.dhan.get_balance() or 0),1.0)
+        realized=float(self.v84_risk.get("realized_pnl",0.0) or 0)
+        # V10.1-R: include UNREALISED P&L from open positions (broker-truth MTM)
+        unrealized=0.0
+        try:
+            for _p in self.active_positions.values():
+                _px=float(self.fetch_ltp_concurrent([str(_p["security_id"])]).get(str(_p["security_id"]),_p.get("entry",0)) or _p.get("entry",0))
+                _entry=float(_p.get("entry",0) or 0); _qty=int(_p.get("qty",0) or 0)
+                if _p.get("side")=="LONG": unrealized += (_px-_entry)*_qty
+                else: unrealized += (_entry-_px)*_qty
+        except Exception as _ue:
+            log.warning(f"unrealised P&L calc failed: {_ue}")
+        total_pnl=realized+unrealized
+        pnl_pct=total_pnl/bal*100
+        if pnl_pct<=-RISK.daily_hard_stop_pct:return False,"DAILY_HARD_STOP"
+        # V10.1-R: 2% account gate uses realised + unrealised. Consecutive-loss REMOVED.
+        if pnl_pct<=-RISK.daily_soft_stop_pct:return False,f"DAILY_SOFT_STOP(r={realized:.0f}+u={unrealized:.0f}={pnl_pct:.2f}%)"
+        return True,"OK"
+
+    def _v10r_gate(self, d, f, c):
+        """V10.1-R canonical authority: veto (anti-chase) + sizing (30%/100%).
+
+        Layered on V8 final_decision(). Never places orders itself — only
+        modifies the decision dict `d` that flows to the existing V851 path.
+        """
+        try:
+            from V10_1_STRATEGY_PATCH import classify_move_stage, MoveStage, Snapshot
+        except Exception as _ie:
+            log.warning(f"V10.1-R gate import failed ({_ie}) — passing V8 decision through")
+            return d
+
+        if not isinstance(d, dict) or d.get("status") != "ENTER":
+            return d
+
+        side = d.get("side", "LONG")
+        direction = "BUY" if side == "LONG" else "SELL"
+        sym = c.get("symbol", "?")
+
+        # 1) Hard universe gate: Rs60-3500 + >=100K volume/ADV
+        ltp = float(f.get("ltp", c.get("ltp", 0)) or 0)
+        if ltp < 60.0 or ltp > 3500.0:
+            log.info(f"V10R VETO {sym}: PRICE_OUTSIDE_60_3500 ({ltp:.2f})")
+            return {"status": "WATCH", "reason": "V10R_PRICE_GATE", "symbol": sym}
+        _today_vol = 0
+        try:
+            _df = f.get("df")
+            if _df is not None and "volume" in _df.columns:
+                _today_vol = int(_df["volume"].sum())
+        except Exception:
+            pass
+        _adv = int(f.get("avg_daily_volume", c.get("adv_20d", 0)) or 0)
+        if max(_today_vol, _adv) < 100000:
+            log.info(f"V10R VETO {sym}: VOLUME_LT_100K (today={_today_vol} adv={_adv})")
+            return {"status": "WATCH", "reason": "V10R_VOLUME_GATE", "symbol": sym}
+
+        # 2) Fresh-quote drift check: 0.30% absolute AND 0.35 ATR
+        signal_price = float(d.get("entry_price", ltp) or ltp)
+        decision_price = ltp  # ltp was fetched fresh in _build_entry_features
+        atr_abs = 0.0
+        try:
+            _df = f.get("df")
+            if _df is not None and len(_df) >= 15:
+                import v82_strategy as _v82
+                # ATR proxy: mean high-low of last 14 bars
+                _hl = (_df["high"] - _df["low"]).tail(14)
+                atr_abs = float(_hl.mean()) if len(_hl) else 0.0
+        except Exception:
+            atr_abs = 0.0
+
+        if signal_price > 0:
+            drift_pct = abs(decision_price - signal_price) / signal_price * 100.0
+            if drift_pct > 0.30:
+                log.info(f"V10R VETO {sym}: DRIFT_0.30pct ({drift_pct:.3f}%)")
+                return {"status": "WATCH", "reason": "V10R_DRIFT_ABS", "symbol": sym}
+        if atr_abs > 0:
+            drift_atr = abs(decision_price - signal_price) / atr_abs
+            if drift_atr > 0.35:
+                log.info(f"V10R VETO {sym}: DRIFT_0.35ATR ({drift_atr:.2f})")
+                return {"status": "WATCH", "reason": "V10R_DRIFT_ATR", "symbol": sym}
+
+        # 3) Build Snapshot for move-stage classification
+        try:
+            from datetime import datetime as _dt
+            snap = Snapshot(
+                symbol=sym, ts=_dt.now(), price=decision_price,
+                atr=atr_abs if atr_abs > 0 else max(decision_price * 0.005, 0.01),
+                vwap=float(f.get("vwap", c.get("vwap", decision_price)) or decision_price),
+                adx=float(f.get("adx", c.get("adx", 20)) or 20),
+                rvol=float(f.get("rvol", 1) or 1),
+                momentum_5m=float(f.get("momentum_5m", 0) or 0),
+                momentum_15m=float(f.get("momentum_15m", 0) or 0),
+                sector_rs=float(f.get("sector_rs", 0) or 0),
+                stock_rs=float(f.get("rs", c.get("rs", 0)) or 0),
+                volume_acceleration=float(f.get("accel", f.get("volume_acceleration", 0)) or 0),
+                orb_high=f.get("orb_high", c.get("orb_high")),
+                orb_low=f.get("orb_low", c.get("orb_low")),
+            )
+            stage = classify_move_stage(snap, direction)
+        except Exception as _se:
+            log.warning(f"V10R stage calc failed for {sym}: {_se} — passing through")
+            return d
+
+        # 4) Apply veto + sizing
+        d["move_stage"] = stage.value if hasattr(stage, "value") else str(stage)
+        if stage == MoveStage.EXHAUSTED:
+            log.info(f"V10R VETO {sym}: EXHAUSTED (anti-chase)")
+            return {"status": "WATCH", "reason": "V10R_EXHAUSTED", "symbol": sym,
+                    "move_stage": d["move_stage"]}
+        elif stage == MoveStage.EARLY_ENTRY:
+            d["position_pct"] = 0.30
+            d["entry_type"] = "EARLY"
+            log.info(f"V10R EARLY {sym}: 30% starter (developed but strong)")
+        else:
+            d["position_pct"] = 1.0
+            d["entry_type"] = "NORMAL"
+        return d
+
+    def _build_entry_features(self,c):
+        f=dict(c)
+        live=self.fetch_ltp_concurrent([c["security_id"]]).get(str(c["security_id"]),c.get("ltp",0))
+        f["ltp"]=float(live or c.get("ltp",0))
+        f["df"]=self._df(c["security_id"])
+        if f["df"] is None:return None
+        from v82_strategy import rvol,momentum
+        f["rvol"]=rvol(f["df"],c.get("avg_daily_volume",c.get("adv_20d",0)) or 0)
+        f["momentum_5m"],f["momentum_15m"],f["momentum_30m"],f["accel"]=momentum(f["df"])
+        f["nifty_data"]=dict(getattr(self,"nifty_data",{}) or {})
+        f["avg_daily_volume"]=c.get("avg_daily_volume",c.get("adv_20d",0)) or 0
+        return f
+
+    def _open_risk_pct(self,balance):
+        total=0.0
+        for p in self.active_positions.values():
+            try: total += abs(float(p["entry"])-float(p["sl"]))*int(p["qty"])
+            except Exception: pass
+        return total/max(balance,1.0)*100
+
+    def _risk_quantity(self,c,d,price):
+        balance=float(self.dhan.get_balance() or 0)
+        stop=float(d["stop"])
+        dist=abs(price-stop)
+        if balance<=0 or dist<=0:return 0,0,0,"INVALID_RISK"
+        allowed,why=self._daily_allowed()
+        if not allowed:return 0,0,0,why
+        open_risk=self._open_risk_pct(balance)
+        remaining=max(0,RISK.max_open_risk_pct-open_risk)
+        risk_pct=min(RISK.risk_per_trade_pct,remaining)
+        if risk_pct<=0:return 0,0,0,"OPEN_RISK_CAP"
+        budget=balance*(1-RISK.cash_reserve_pct/100)*risk_pct/100
+        per_share=dist+price*RISK.slippage_pct/100
+        qty=int(budget/per_share)
+        max_qty=int(balance*(RISK.max_single_notional_pct/100)/max(price,.01))
+        qty=min(qty,max_qty)
+        if qty<1:return 0,0,0,"RISK_BUDGET_TOO_SMALL"
+        txn="BUY" if d["side"]=="LONG" else "SELL"
+        margin=self.dhan.calculate_margin(c["security_id"],qty,txn,price) or {}
+        avail=float(margin.get("availableBalance",margin.get("availabelBalance",balance)) or balance)
+        req=float(margin.get("totalMargin",0) or 0)
+        if req>avail and req>0:
+            qty=max(0,int(qty*avail/req*.98))
+            if qty<1:return 0,0,0,"MARGIN_REJECT"
+            margin=self.dhan.calculate_margin(c["security_id"],qty,txn,price) or margin
+            avail=float(margin.get("availableBalance",avail) or avail);req=float(margin.get("totalMargin",req) or req)
+        return (qty if req<=avail else 0),risk_pct,req,"OK" if req<=avail else "MARGIN_REJECT"
+
+    def _confirm_entry(self,c,d):
+        """Three 10-second confirmations + structure check; rejects transient breach."""
+        if self.dry_run:return True
+        sid=str(c["security_id"]); side=d["side"]; ref=float(d["entry_price"])
+        # V10.1-R: single fresh LTP check, NO fixed 30s confirmation delay.
+        px=float(self.fetch_ltp_concurrent([sid]).get(sid,0) or 0)
+        if px<=0:return False
+        if side=="LONG" and px < ref:return False
+        if side=="SHORT" and px > ref:return False
+        # VWAP as quality MODIFIER (not absolute gate) — per developer spec
+        # Strong setup+momentum can override mild VWAP misalignment
+        try:
+            df=self._df(sid)
+            if df is not None and len(df)>=3:
+                from v82_strategy import vwap as _vwap_calc
+                _vw=_vwap_calc(df); _last=float(df["close"].iloc[-1])
+                _score=float(d.get("final_score",0))
+                # Only REJECT if VWAP strongly against AND score < 75 (not exceptional)
+                if side=="LONG" and _last < _vw * 0.995 and _score < 75:
+                    log.info(f"CONFIRM REJECT {c.get('symbol','?')}: LONG below VWAP ({_last:.2f}<{_vw:.2f}) score={_score:.0f}<75")
+                    return False
+                if side=="SHORT" and _last > _vw * 1.005 and _score < 75:
+                    log.info(f"CONFIRM REJECT {c.get('symbol','?')}: SHORT above VWAP ({_last:.2f}>{_vw:.2f}) score={_score:.0f}<75")
+                    return False
+                # Log warning for mild misalignment (doesn't reject)
+                if side=="LONG" and _last < _vw * 0.998:
+                    log.info(f"VWAP WARNING {c.get('symbol','?')}: LONG mildly below VWAP, score={_score:.0f} allows entry")
+                if side=="SHORT" and _last > _vw * 1.002:
+                    log.info(f"VWAP WARNING {c.get('symbol','?')}: SHORT mildly above VWAP, score={_score:.0f} allows entry")
+        except Exception:pass
+        return True
+
+    def execute_entry(self,c,d):
+        sid=str(c["security_id"]);side=d["side"]
+        if sid in self.active_positions:return False,"already_active"
+        if len(self.active_positions)>=RISK.max_intraday_positions:return False,"POSITION_CAP"
+        # MIN VOLUME GATE: 50K shares minimum (today's cumulative or 20d average)
+        _df_vol = c.get("df")
+        _today_vol = int(_df_vol["volume"].sum()) if _df_vol is not None and "volume" in _df_vol.columns else 0
+        _avg_vol = int(c.get("avg_daily_volume", c.get("adv_20d", 0)) or 0)
+        if _today_vol < 100000 and _avg_vol < 100000:
+            log.info("SKIP %s: low volume (today=%dK, avg=%dK) < 100K min", c.get("symbol","?"), _today_vol//1000, _avg_vol//1000)
+            return False, "LOW_VOLUME"
+        if not self._confirm_entry(c,d):return False,"ENTRY_CONFIRMATION_FAILED"
+        price=float(self.fetch_ltp_concurrent([sid]).get(sid,d["entry_price"]) or d["entry_price"])
+        stop=float(d["stop"])
+        if (side=="LONG" and stop>=price) or (side=="SHORT" and stop<=price):return False,"INVALID_STOP_SIDE"
+        qty,risk_pct,margin_req,status=self._risk_quantity(c,d,price)
+        if qty<1:return False,status
+        # PATCH #1: Log sizing decision audit trail
+        _sizing_audit={"balance":float(self.dhan.get_balance() or 0),"entry_price":price,"stop_price":float(d["stop"]),"risk_per_share":abs(price-float(d["stop"])),"risk_pct":risk_pct,"margin_required":margin_req,"final_qty":qty,"notional":round(qty*price,2),"score":float(d.get("final_score",0)),"status":status}
+        log.info(f"SIZING: {c.get('symbol','?')} qty={qty} | bal={_sizing_audit['balance']:.0f} risk/sh={_sizing_audit['risk_per_share']:.2f} notional={_sizing_audit['notional']:.0f} score={_sizing_audit['score']:.1f}")
+        txn="BUY" if side=="LONG" else "SELL"
+        
+        # V10.1: Price revalidation before order
+        import time as _t_reval
+        _signal_time = _t_reval.time()
+        _signal_price = price
+        try:
+            _fresh_ltp = self.dhan.get_ltp(sid)
+            if _fresh_ltp and _fresh_ltp > 0:
+                _drift_pct = abs(_fresh_ltp - price) / price * 100.0
+                if _drift_pct > 0.30:
+                    log.warning(f"PRICE_REVALIDATION FAIL: {c.get('symbol','?')} drift={_drift_pct:.2f}% (signal={price:.2f} live={_fresh_ltp:.2f})")
+                    return False, f"PRICE_DRIFT_{_drift_pct:.1f}pct"
+                log.info(f"PRICE_REVALIDATION OK: {c.get('symbol','?')} drift={_drift_pct:.3f}%")
+        except Exception as _rv_e:
+            log.warning(f"Price revalidation skipped: {_rv_e}")
+        resp=self.dhan.place_order(sid,qty,0,txn,"MARKET");oid=(resp or {}).get("orderId") if isinstance(resp,dict) else None
+        if not oid:return False,"dhan_order_not_accepted"
+        fill=self.dhan.verify_fill(oid)
+        if fill["status"]=="PARTIAL":
+            try:self.dhan.cancel_order(oid)
+            except Exception:pass
+        if fill["status"] not in ("FILLED","PARTIAL") or fill["qty"]<=0:
+            try:self.dhan.cancel_order(oid)
+            except Exception:pass
+            import time as _t;_t.sleep(0.5)
+            _nq=self.dhan.verify_position(sid,side)
+            if (side=="LONG" and _nq>0) or (side=="SHORT" and _nq<0):
+                log.warning(f"ENTRY_TIMEOUT RACE: {c.get('symbol','?')} filled AFTER timeout! nq={_nq} — adopting")
+                fill["qty"]=abs(_nq);fill["status"]="FILLED";fill["price"]=float(self.dhan.get_order_status(oid) or {}).get("averageTradedPrice",0) or price
+            else:
+                return False,f"entry_{fill['status']}"
+        fq=int(fill["qty"]);fp=float(fill["price"] or price)
+        nq=self.dhan.verify_position(sid,side)
+        if (side=="LONG" and nq<=0) or (side=="SHORT" and nq>=0):
+            self.emergency_exit(sid,fq,side);return False,"broker_position_mismatch"
+        # Keep the strategy-derived stop, but never allow a stop on the wrong side of fill.
+        if (side=="LONG" and stop>=fp) or (side=="SHORT" and stop<=fp):
+            _atr=float(c.get("atr",0) or 0)
+            if _atr<=0:
+                _atr=float(c.get("atr_pct",0) or 0)/100.0*fp
+            if _atr<=0:
+                _atr=max(fp*0.005,0.05)
+            try:
+                stop=v854_structural_stop(side,fp,_atr,float(c.get("support",0) or 0) or None,float(c.get("resistance",0) or 0) or None,float(d.get("entry_price",0) or 0) or None)
+            except Exception:
+                stop=fp*(0.9925 if side=="LONG" else 1.0075)
+            stop=broker_valid_trigger(side,stop,fp,_atr) or 0.0
+            if stop<=0:
+                self.emergency_exit(sid,fq,side); return False,"NO_VALID_STRUCTURAL_STOP"
+        try:
+            _sl_order = StopLossBuilder.build_sl_order(side=side, stop_level=round(stop,2), current_ltp=fp, qty=fq, security_id=str(sid))
+            sl = self.dhan.place_order(security_id=str(sid), qty=_sl_order['qty'], price=_sl_order['price'], transaction_type=_sl_order['txn'], order_type='STOP_LOSS', trigger_price=_sl_order['trigger_price'])
+        except (ValueError, Exception) as _sl_e:
+            log.error(f'HARD SL BUILD FAILED: {c.get("symbol","?")} {side} stop={round(stop,2)} ltp={fp} — {_sl_e}')
+            sl = None
+        sl_oid = (sl or {}).get('orderId') if isinstance(sl, dict) else None
+        if not sl_oid:
+            log.error(f"HARD SL FAILED: {c.get('symbol','?')} sid={sid} side={side} stop={round(stop,2)}")
+            if self.ei: self.ei.guard.report_sl_failure(c.get('symbol','?'))
+            self.emergency_exit(sid,fq,side);return False,"hard_sl_not_accepted"
+        st=(self.dhan.get_order_status(sl_oid) or {}).get("orderStatus","").upper()
+        if st not in ("PENDING","TRANSIT","TRADED","PART_TRADED"):
+            self.emergency_exit(sid,fq,side);return False,f"hard_sl_{st or 'UNKNOWN'}"
+        self.active_positions[sid]={"symbol":c.get("symbol","?"),"security_id":sid,"side":side,"qty":fq,"entry":fp,"initial_sl":stop,"sl":stop,"sl_order_id":sl_oid,"peak":fp,"trough":fp,"mfe":0.0,"mae":0.0,"score":float(d["final_score"]),"mode":d["setup_type"],"target":float(d["target"]),"risk_pct":risk_pct,"best_r":0.0,"weak_count":0,"max_profit_pct":0.0,"entry_time":now_ist().isoformat(),"source":"V854_BOT","rs":float(c.get("rs",d.get("rs",0)) or 0),"atr":float(c.get("atr",c.get("atr_pct",0)) or 0),"support":float(c.get("support",0) or 0),"resistance":float(c.get("resistance",0) or 0),"trigger":float(d.get("entry_price",0) or 0)}
+        self._save_state();_event("v84_entry",self.active_positions[sid])
+        _v854_audit={"event":"ENTRY","symbol":c.get("symbol","?"),"security_id":sid,"side":side,"entry_price":fp,"fill_price":fp,"qty":fq,"raw_score":float(c.get("raw_score",d.get("final_score",0)) or 0),"final_score":float(d.get("final_score",0)),"initial_sl":stop,"risk_per_share":abs(fp-stop),"expected_move_pct":float(d.get("expected_move_pct",0) or 0),"setup_type":d.get("setup_type",""),"entry_time":now_ist().isoformat(),"order_id":oid,"sl_order_id":sl_oid,"signal_to_fill_ms":round((_t_reval.time()-_signal_time)*1000,1),"signal_price":_signal_price,"price_drift_pct":round(abs(fp-_signal_price)/max(_signal_price,1)*100,3)}
+        _ok,_why=v854_validate_entry_audit(_v854_audit)
+        _v854_audit["validation"]=_why; v854_append_audit(_v854_audit)
+        if not _ok: log.error("V854 ENTRY AUDIT INVALID %s: %s",c.get("symbol","?"),_why)
+        try:import trade_journal;trade_journal.log_trade({"symbol":c.get("symbol"),"side":side,"entry":fp,"qty":fq,"score":float(d["final_score"]),"mode":d["setup_type"],"entry_time":now_ist().isoformat()})
+        except Exception:pass
+        try:log_entry(c,d,{"price":fp,"qty":fq,"order_id":oid},{"total_score":float(d.get("final_score",0)),"market":float(d.get("market_score",0)),"sector":float(d.get("sector_score",0)),"rs":float(d.get("rs_score",0)),"momentum":float(d.get("momentum_score",0)),"rvol":float(d.get("rvol_score",0)),"vwap_trend":float(d.get("vwap_score",0)),"setup_quality":float(d.get("setup_quality",0)),"entry_quality":float(d.get("entry_quality",0))},{"nifty":self._nifty_ltp,"banknifty":self._banknifty_ltp,"regime":self._regime,"direction":self._market_direction,"vix":0,"leaders":self._leaders,"laggards":self._laggards})
+        except Exception:pass
+        return True,"ENTRY_OK"
+
+    def close_position(self,sid,reason,px=None):
+        p=self.active_positions.get(str(sid))
+        if not p:return False
+        entry=float(p["entry"]);side=p["side"];exit_px=float(px or entry)
+        pnl=((exit_px-entry)/entry*100) if side=="LONG" else ((entry-exit_px)/entry*100)
+        ok=super().close_position(sid,reason,px)
+        if ok:
+            try:
+                _dur=0
+                if p.get("entry_time"):
+                    from datetime import datetime,timezone,timedelta
+                    _et=datetime.fromisoformat(str(p["entry_time"]))
+                    _dur=int((datetime.now(timezone(timedelta(hours=5,minutes=30)))-_et).total_seconds()//60)
+            except Exception:_dur=0
+            log.info(f"EXIT AUDIT: {p.get('symbol','?')} {side} entry={entry} exit={exit_px} reason={reason} peak={p.get('peak',0)} best_r={p.get('best_r',0):.2f} mfe={p.get('mfe',0):.2f} mae={p.get('mae',0):.2f} state={p.get('state','?')}")
+            try:log_exit(p.get("symbol","?"),sid,side,entry,exit_px,int(p.get("qty",0)),reason,float(p.get("peak",0)),_dur,str(p.get("entry_time","")))
+            except Exception:pass
+            self.v84_risk["realized_pnl"]=float(self.v84_risk.get("realized_pnl",0))+((exit_px-entry)*p["qty"] if side=="LONG" else (entry-exit_px)*p["qty"])
+            self.v84_risk["consecutive_losses"]=int(self.v84_risk.get("consecutive_losses",0))+1 if pnl<0 else 0
+            self._save_v84_risk()
+        return ok
+
+    def _broker_trail_sl(self, sid, p, current_r, px):
+        """PATCH_C: Broker-side profit protection.
+        Modifies existing Dhan SL order at R milestones:
+          <1R: original SL | >=1R: 0.5R | >=2R: 1.25R | >=2.5R: 1.75R | >=3R: 2.25R"""
+        sl_order_id = p.get("sl_order_id")
+        if not sl_order_id:
+            return
+        side = p["side"]
+        entry = float(p["entry"])
+        risk_per_share = max(abs(entry - float(p.get("initial_sl", p["sl"]))), 0.01)
+        
+        if current_r >= 3.0: protect_r = 2.25
+        elif current_r >= 2.5: protect_r = 1.75
+        elif current_r >= 2.0: protect_r = 1.25
+        elif current_r >= 1.0: protect_r = 0.5
+        else: return  # Below 1R, keep original SL
+        
+        if side == "LONG":
+            new_sl = round(entry + protect_r * risk_per_share, 2)
+            if new_sl <= float(p["sl"]): return  # Only tighten
+        else:
+            new_sl = round(entry - protect_r * risk_per_share, 2)
+            if new_sl >= float(p["sl"]): return  # Only tighten
+        
+        try:
+            result = modify_pending_sl(self.dhan, sl_order_id, int(p["qty"]), new_sl, side, px)
+            if result:
+                old_sl = p["sl"]
+                p["sl"] = new_sl
+                _event("v855_broker_trail", {"symbol": p.get("symbol", sid), "side": side, "current_r": round(current_r, 2), "protect_r": protect_r, "old_sl": old_sl, "new_sl": new_sl})
+                log.info("BROKER_TRAIL: %s %s R=%.2f SL: %.2f -> %.2f (protect %.1fR)", p.get("symbol", sid), side, current_r, old_sl, new_sl, protect_r)
+        except Exception as e:
+            log.error("BROKER_TRAIL FAILED: %s %s — %s", p.get("symbol", sid), side, e)
+            _event("v855_broker_trail_fail", {"symbol": p.get("symbol", sid), "error": str(e)})
+
+    def monitor_positions(self):
+        """V8.5.5: Multi-factor reversal exit. Fetch df BEFORE exit eval."""
+        if not self.active_positions:
+            return
+        prices = self.fetch_ltp_concurrent(list(self.active_positions.keys()))
+        for sid, p in list(self.active_positions.items()):
+            px = float(prices.get(sid, 0) or 0)
+            if px <= 0:
+                continue
+            entry=float(p.get("entry",0) or 0)
+            if entry <= 0:
+                log.error("INVALID_POSITION_ENTRY: sid=%s entry=%r; skipping unsafe exit evaluation",sid,p.get("entry"))
+                _event("invalid_position_entry",{"sid":str(sid),"entry":p.get("entry")})
+                continue
+            side=str(p.get("side","")).upper()
+            if side not in ("LONG","SHORT"):
+                log.error("INVALID_POSITION_SIDE: sid=%s side=%r",sid,p.get("side")); continue
+            try: _sl_val=float(p.get("initial_sl",p.get("sl",0)) or 0)
+            except (TypeError,ValueError): _sl_val=0.0
+            if _sl_val <= 0:
+                log.error("INVALID_POSITION_SL: sid=%s initial_sl=%r sl=%r",sid,p.get("initial_sl"),p.get("sl")); continue
+            risk_per_share=max(abs(entry-_sl_val),0.01)
+
+            # CRITICAL: Fetch df/snapshot BEFORE exit evaluation (V8.5.4 bug fix)
+            df = self._df(sid)
+            if df is None or len(df) < 3:
+                log.warning("V855 EXIT: %s df unavailable, skipping exit eval", sid)
+                continue
+
+            # PATCH B: Real-time exit snapshot (fresh RS, RVOL, volume reversal, structural)
+            vw = vwap(df)
+            from v82_strategy import momentum as calc_momentum
+            m5, m15, m30, accel = calc_momentum(df)
+            
+            # Fresh RVOL
+            # RVOL: calculate from df directly (avg_daily_volume not stored in position)
+            # Fresh RVOL from intraday volume bars
+            volumes = [float(x) for x in df.volume.tail(20)] if hasattr(df, "volume") and len(df) >= 20 else []
+            rv = (volumes[-1] / (sum(volumes[:-1]) / max(len(volumes)-1, 1))) if len(volumes) >= 5 and sum(volumes[:-1]) > 0 else 1.0
+            
+            # Fresh RS: stock vs NIFTY relative strength
+            nifty_px = float(getattr(self, "_nifty_ltp", 0) or 0)
+            nifty_vwap = float(getattr(self, "_nifty_vwap", 0) or 0)
+            if nifty_px > 0 and nifty_vwap > 0 and vw > 0:
+                stock_vs_vwap = (px - vw) / vw * 100
+                nifty_vs_vwap = (nifty_px - nifty_vwap) / nifty_vwap * 100
+                rs_val = stock_vs_vwap - nifty_vs_vwap
+            else:
+                rs_val = float(p.get("rs", 0) or 0)  # fallback only if NIFTY unavailable
+            
+            # Volume reversal: selling/buying surge against position
+            volumes = [float(x) for x in df.volume.tail(5)] if hasattr(df, "volume") and len(df) >= 5 else []
+            volume_rev = False
+            if len(volumes) >= 5:
+                avg_vol = sum(volumes) / len(volumes)
+                cur_vol = volumes[-1] if volumes else 0
+                if avg_vol > 0 and cur_vol > avg_vol * 1.5:
+                    # Direction-aware: only reversal if price moving AGAINST position
+                    closes_5 = [float(x) for x in df.close.tail(5)] if hasattr(df, "close") else []
+                    if len(closes_5) >= 2:
+                        price_falling = closes_5[-1] < closes_5[-2]
+                        price_rising = closes_5[-1] > closes_5[-2]
+                        if side == "LONG" and price_falling:
+                            volume_rev = True  # High volume + bearish = reversal for longs
+                        elif side == "SHORT" and price_rising:
+                            volume_rev = True  # High volume + bullish = reversal for shorts
+                if avg_vol > 0 and cur_vol > avg_vol * 1.5:
+                    # Direction-aware: only reversal if price moving AGAINST position
+                    closes_5 = [float(x) for x in df.close.tail(5)] if hasattr(df, "close") else []
+                    if len(closes_5) >= 2:
+                        price_falling = closes_5[-1] < closes_5[-2]
+                        price_rising = closes_5[-1] > closes_5[-2]
+                        if side == "LONG" and price_falling:
+                            volume_rev = True  # High volume + bearish = reversal for longs
+                        elif side == "SHORT" and price_rising:
+                            volume_rev = True  # High volume + bullish = reversal for shorts
+            
+            # Structural invalidation: price beyond SL
+            structural_inv = False
+            if side == "LONG" and px < float(p["sl"]):
+                structural_inv = True
+            elif side == "SHORT" and px > float(p["sl"]):
+                structural_inv = True
+            
+            # Candle reversal: 2-bar direction change
+            closes = [float(x) for x in df.close.tail(3)]
+            candle_rev = False
+            if len(closes) >= 3:
+                if side == "LONG" and closes[-2] > closes[-3] and closes[-1] < closes[-2]:
+                    candle_rev = True
+                elif side == "SHORT" and closes[-2] < closes[-3] and closes[-1] > closes[-2]:
+                    candle_rev = True
+            
+            snapshot = {
+                "vwap": vw,
+                "mom_5m": m5,
+                "mom_15m": m15,
+                "rs": rs_val,
+                "rvol": rv,
+                "candle_reversal": candle_rev,
+                "volume_reversal": volume_rev,
+                "structural_invalidated": structural_inv,
+            }
+
+            # Update peak tracking
+            peak = float(p.get("peak", entry))
+            exit_state = ExitState(peak_price=peak, best_r=float(p.get("best_r", 0)))
+            update_peak(exit_state, side, px)
+            p["peak"] = exit_state.peak_price
+            p["best_r"] = exit_state.best_r
+            # V10.1-R: MFE/MAE tracking (item 7) + state-machine label (item 6)
+            _entry_px = float(p.get("entry", px)); _init_sl = float(p.get("initial_sl", p.get("sl", _entry_px)))
+            _risk_ps = max(abs(_entry_px - _init_sl), 0.01)
+            if side == "LONG":
+                _fav = px - _entry_px; _adv = _entry_px - px
+            else:
+                _fav = _entry_px - px; _adv = px - _entry_px
+            p["mfe"] = max(float(p.get("mfe", 0.0)), _fav)
+            p["mae"] = max(float(p.get("mae", 0.0)), _adv)
+            _cur_r = _fav / _risk_ps
+            if _cur_r < 0.5: _state = "INITIAL"
+            elif _cur_r < 1.0: _state = "PROVEN"
+            elif _cur_r < 2.0: _state = "PROFIT"
+            else: _state = "RUNNER"
+            p["state"] = _state
+            _event("v10r_position_state", {"symbol": p.get("symbol","?"), "state": _state,
+                "cur_r": round(_cur_r,2), "best_r": round(float(p.get("best_r",0)),2),
+                "mfe": round(p["mfe"],2), "mae": round(p["mae"],2), "px": px})
+            
+            # PATCH C: Broker-side progressive SL trailing
+            if side == "LONG":
+                current_r = (px - entry) / risk_per_share
+            else:
+                current_r = (entry - px) / risk_per_share
+            self._broker_trail_sl(sid, p, current_r, px)
+
+            # V8.5.5 profit-fading exit evaluation — NO except:pass
+            _pfe_dict = {
+                "symbol": p.get("symbol", sid),
+                "side": side,
+                "price": px,
+                "entry_price": entry,
+                "sl": float(p.get("sl", 0)),
+                "initial_sl": float(p.get("initial_sl", p.get("sl", 0))),
+                "peak": float(p.get("peak", px)),
+                "best_r": float(p.get("best_r", 0)),
+                "peak_r": float(p.get("best_r", 0)),
+                "giveback_r": float(p.get("giveback_r", 0)),
+                "qty": int(p.get("qty", 0)),
+                "mfe": float(p.get("mfe", 0)),
+                "mae": float(p.get("mae", 0)),
+                "last_tighten_r": float(p.get("last_tighten_r", 0)),
+                "entry_type": p.get("entry_type", "NORMAL"),
+                "position_pct": float(p.get("position_pct", 1.0)),
+                "confirmed": p.get("confirmed", True),
+            }
+            _pfe_dict.update(snapshot)
+            exit_result = profit_fading_exit(_pfe_dict)
+
+            # Audit log every evaluation
+            _event("v855_exit_eval", {
+                "symbol": p.get("symbol", sid),
+                "side": side,
+                "price": px,
+                "r": exit_result.get("r"),
+                "peak_r": exit_result.get("peak_r"),
+                "retrace_r": exit_result.get("retrace_r"),
+                "reason": exit_result.get("reason"),
+                "confirmations": exit_result.get("confirmations", 0),
+                "reasons": exit_result.get("reasons", []),
+                "exit": exit_result.get("exit", False),
+                "snapshot_rs": snapshot.get("rs"),
+                "snapshot_rvol": snapshot.get("rvol"),
+                "snapshot_vol_rev": snapshot.get("volume_reversal"),
+                "snapshot_struct_inv": snapshot.get("structural_invalidated"),
+            })
+
+            if exit_result.get("exit"):
+                reason = exit_result["reason"]
+                log.info(
+                    "V855 EXIT: %s %s @ %.2f | R=%.2f peak_R=%.2f | %s | confirms=%s",
+                    p.get("symbol", sid), side, px,
+                    exit_result["r"], exit_result["peak_r"],
+                    reason, exit_result.get("reasons", [])
+                )
+                self.close_position(sid, "V855_" + reason, px)
+
+        self._save_state()
+
+    def run(self):
+        enforce=os.getenv("V82_ENFORCE_STATIC_IP","1")=="1"
+        ok,msg=self.dhan.preflight(enforce_static_ip=enforce)
+        if not ok and not self.dry_run:raise RuntimeError("V8.4 PREFLIGHT FAILED: "+msg)
+        log.info("V8.4 PREFLIGHT: %s",msg)
+        log.info("ENGINE_VERSION=8.5.4 | PATCHES=V851+V853+V854_UNIFIED")
+        if _V851_LOADED:
+            install_gateway_patch(self.dhan)
+            log.info("V8.5.1 gateway patch installed (SL-M fix + tick rounding)")
+        # Initialize market state attributes (PATCH #6)
+        self._nifty_ltp=0.0; self._banknifty_ltp=0.0
+        self._regime="NORMAL"; self._market_direction="NEUTRAL"
+        self._leaders=[]; self._laggards=[]
+        try:
+            _v854_recon=v854_reconcile_broker(self, deep=True)
+            log.info("V854 startup reconciliation: %s", _v854_recon)
+            v854_append_audit({"event":"RECONCILIATION","time":now_ist().isoformat(),**_v854_recon})
+        except Exception as _e:
+            log.exception("V854 startup reconciliation failed: %s", _e)
+        _v854_next_recon=time.monotonic()+60
+        _v854_next_audit=time.monotonic()+900
+        while now_ist()<ist_time(9,30):time.sleep(5)
+        self.check_market_quality();self.snapshot_market();self.select_candidates()
+        next_scan=time.monotonic();next_snapshot=time.monotonic()
+        while now_ist()<ist_time(15,5):
+            self._load_v84_risk()
+            if time.monotonic()>=next_snapshot:self.snapshot_market();next_snapshot=time.monotonic()+self.snapshot_minutes*60
+            self.monitor_positions()
+            if time.monotonic() >= _v854_next_recon:
+                try:
+                    _v854_recon=v854_reconcile_broker(self, deep=False)
+                    # V8.6.0 Execution Integrity reconciliation
+                    try:
+                        if self.ei:
+                            _ei_recon = self.ei.reconcile()
+                            if _ei_recon.get('orphans_adopted', 0) > 0:
+                                log.warning(f"EI ADOPTED {_ei_recon['orphans_adopted']} orphan(s)")
+                    except Exception as _ei_e:
+                        log.error(f'EI reconcile error: {_ei_e}')
+                    log.info("V854 position reconciliation: %s", _v854_recon)
+                    v854_append_audit({"event":"RECONCILIATION","time":now_ist().isoformat(),**_v854_recon})
+                except Exception as _e:
+                    log.exception("V854 reconciliation failed: %s", _e)
+                _v854_next_recon=time.monotonic()+60
+            if time.monotonic() >= _v854_next_audit:
+                try:
+                    _v854_audit=v854_reconcile_broker(self, deep=True)
+                    log.info("V854 15m deep broker audit: %s", _v854_audit)
+                    v854_append_audit({"event":"DEEP_BROKER_AUDIT","time":now_ist().isoformat(),**_v854_audit})
+                except Exception as _e:
+                    log.exception("V854 deep audit failed: %s", _e)
+                _v854_next_audit=time.monotonic()+900
+            now=now_ist();hh,mm=map(int,self.entry_cutoff.split(":"))
+            if now<ist_time(hh,mm) and time.monotonic()>=next_scan:
+                self.check_market_quality();self.select_candidates()
+                allowed,why=self._daily_allowed()
+                if allowed and self.ei and not self.ei.guard.entries_allowed()[0]: allowed=False;why="KILL_SWITCH: "+str(self.ei.guard.entries_allowed()[1])
+                if allowed:
+                    # V11: Start latency trace for this scan cycle
+                    _v11_trace = None
+                    if self.obs:
+                        try:
+                            _v11_scan_cycle = getattr(self, '_v11_scan_count', 0) + 1
+                            self._v11_scan_count = _v11_scan_cycle
+                            _v11_trace = self.obs.start_latency_trace(_v11_scan_cycle)
+                            self.obs.mark_latency(_v11_trace, 'scan_start')
+                        except Exception: pass
+                    # V11: Reset candidate manager at session start (first scan)
+                    if self.cm and not getattr(self, '_v11_cm_started', False):
+                        self.cm.reset()
+                        self._v11_cm_started = True
+                    ranked=[]
+                    for c in list(self.candidates):
+
+                        # V10.1 Universe Gate: price + liquidity filter
+                        if _UNIVERSE_GATE_ACTIVE:
+                            _ltp = float(c.get("ltp", c.get("close", 0)) or 0)
+                            if _ltp < MIN_PRICE or _ltp > MAX_PRICE:
+                                continue
+                        if str(c["security_id"]) in self.active_positions:continue
+                        f=self._build_entry_features(c)
+                        if not f: continue
+                        # V12: Early discovery feature enrichment (P0-1 fix)
+                        if self.discovery is not None:
+                            try:
+                                _df = f.get('df')
+                                _bars = len(_df) if _df is not None else 0
+                                if _bars >= 5 and _bars < 20 and self.discovery.can_score_early(_df):
+                                    _prev_close = float(c.get('prev_close', 0) or 0)
+                                    f = self.discovery.enrich_features_early(_df, f, _prev_close)
+                                    _disc = self.discovery.compute_discovery_score(
+                                        c.get('symbol', '?'), _df, f, _prev_close)
+                                    c['_discovery_score'] = _disc.get('discovery_score', 0)
+                                    c['_discovery_phase'] = _disc.get('phase', 'UNKNOWN')
+                                    c['_discovery_precursor'] = self.discovery.is_future_mover_precursor(_df, f)[0]
+                                    log.info('[V12_DISC] %s disc=%.0f phase=%s bars=%d rvol=%.1f rs=%.2f',
+                                        c.get('symbol','?'), _disc['discovery_score'], _disc['phase'],
+                                        _bars, _disc.get('rvol_raw',0), _disc.get('rs_raw',0))
+                            except Exception as _disc_e:
+                                log.debug('V12 discovery error: %s', _disc_e)
+
+                        d=None
+                        try:
+
+                            d=final_decision(f)
+                        except Exception as _decision_e:
+                            log.exception("FINAL_DECISION_FAILED: %s",_decision_e)
+                            _event("v84_entry_evaluation_error",{"symbol":c.get("symbol"),"error":str(_decision_e)})
+                            continue
+                        if not isinstance(d,dict):
+                            log.error("FINAL_DECISION_INVALID: %s returned %r",c.get("symbol"),type(d).__name__)
+                            continue
+                        # V10.1-R CANONICAL AUTHORITY: veto (anti-chase) + sizing (30%/100%)
+                        d=self._v10r_gate(d, f, c)
+                        _event("v84_entry_evaluation",{"symbol":c.get("symbol"),**{k:d.get(k) for k in ("side","final_score","edge","setup_type","status","reason","move_stage","entry_type","position_pct")}})
+                        log.info(f"DECISION: {c.get('symbol','?'):12s} | {d.get('status','?'):8s} | score={d.get('final_score',0):5.1f} | {d.get('setup_type','?'):20s} | stage={d.get('move_stage','?'):10s} | type={d.get('entry_type','?'):12s} | pct={d.get('position_pct',0)}")
+
+                        # --- V12 Shadow Evaluation ---
+                        if _V12_AVAILABLE:
+                            try:
+                                # Build score components from live pipeline data (f=features, d=decision)
+                                _ndata = f.get("nifty_data", {}) or {}
+                                _v12_mkt = 7.0 if float(_ndata.get("gap", 0) or 0) > 0.3 else (0.0 if abs(float(_ndata.get("gap", 0) or 0)) < 0.5 else -3.0)
+                                _v12_sec = 4.0 if f.get("sector_leading") else (-2.0 if f.get("sector_against") else float(f.get("sector_rs", 0) or 0))
+                                _v12_rs = min(15.0, max(0.0, float(f.get("rs", 0) or 0) * 5.0))
+                                _v12_mom = min(18.0, max(0.0, abs(float(f.get("momentum_15m", 0) or 0)) * 8.0))
+                                _v12_rvol_sc = min(12.0, max(0.0, (float(f.get("rvol", 0) or 0) - 1.0) * 7.0))
+                                _v12_vwap_sc = 10.0 if d.get("setup_type", "").startswith("ORB") else 5.0
+                                _v12_setup_sc = float(d.get("setup_quality", 10) or 10)
+                                _v12_entry_sc = float(d.get("entry_quality", 7) or 7)
+                                _v12_opp = min(8.0, float(d.get("expected_move_pct", 0) or 0) * 4.0)
+                                _v12_sc = {"MKT": _v12_mkt, "SEC": _v12_sec, "RS": _v12_rs, "MOM": _v12_mom,
+                                           "RVOL": _v12_rvol_sc, "VWAP": _v12_vwap_sc, "SETUP": _v12_setup_sc,
+                                           "ENTRY": _v12_entry_sc, "OPP": _v12_opp}
+                                _v12_v853 = {"phase": c.get("v853_phase", d.get("setup_type", "")),
+                                             "quality": float(d.get("setup_quality", 0) or 0),
+                                             "timing": float(d.get("entry_quality", 0) or 0),
+                                             "fitness": float(d.get("final_score", 0) or 0)}
+                                _v12_snap = {"rvol": float(f.get("rvol", 0) or 0),
+                                             "momentum": float(f.get("momentum_5m", 0) or 0),
+                                             "vwap": float(c.get("vwap", 0) or f.get("ltp", 0) or 0),
+                                             "rs_val": float(f.get("rs", 0) or 0)}
+                                _v12_orb = {"orb_high": float(c.get("orb_high", 0) or 0),
+                                            "orb_low": float(c.get("orb_low", 0) or 0)}
+                                _v12_side = d.get("side", "LONG") if d.get("status") == "ENTER" else ("SHORT" if c.get("side", "LONG") == "SHORT" else "LONG")
+                                _v12_price = float(f.get("ltp", 0) or c.get("ltp", 0) or c.get("price", 0) or 0)
+                                _v12_atr = None
+                                try:
+                                    _df = f.get("df")
+                                    if _df is not None and len(_df) >= 5:
+                                        _closes = [float(x) for x in _df['close'].tolist()]
+                                        _v12_atr = sum(abs(_closes[i] - _closes[i-1]) for i in range(1, len(_closes))) / max(1, len(_closes)-1)
+                                except Exception: pass
+                                _v12_result = v12_shadow_evaluate(
+                                    c.get("symbol", "?"), _v12_side, _v12_price,
+                                    _v12_sc, _v12_v853, _v12_snap,
+                                    orb_data=_v12_orb, atr=_v12_atr,
+                                    v12_engine=_v12_engine, obs_engine=getattr(self, "obs", None))
+                                if _v12_result:
+                                    log.info(f"  [V12] WOULD_{_v12_result.decision.value}: {_v12_result.reason} (score={_v12_result.calibrated_score:.1f}, strategy={_v12_result.strategy})")
+                                else:
+                                    _v12_total = sum(_v12_sc.values())
+                                    log.info(f"  [V12_SHADOW] {c.get('symbol','?')} {_v12_side} | score_total={_v12_total:.0f} | disc={_v12_mkt+_v12_sec+_v12_rs:.0f} setup={_v12_setup_sc+_v12_vwap_sc+_v12_opp:.0f} entry={_v12_mom+_v12_rvol_sc+_v12_entry_sc:.0f} | rvol={f.get('rvol',0)} | NO_V12_RESULT")
+                            except Exception as _v12e:
+                                log.debug(f"  [V12] shadow error: {_v12e}")
+                        # --- end V12 Shadow ---
+                            # V11: Update candidate state + log to observability
+                            try:
+                                _v11_log_candidate = True
+                                _sym = c.get('symbol', '?')
+                                _sid = str(c.get('security_id', ''))
+                                _side = d.get('side', 'LONG')
+                                _ltp = float(c.get('ltp', c.get('close', 0)) or 0)
+                                # Update candidate manager
+                                if self.cm:
+                                    _obs = {'time': now_ist().isoformat(), 'ltp': _ltp,
+                                             'volume': float(c.get('volume', 0) or 0),
+                                             'valid_candles': int(c.get('valid_candles', 0) or 0),
+                                             'rvol': float(c.get('rvol', 0) or 0),
+                                             'momentum_5m': float(c.get('momentum_5m', 0) or 0),
+                                             'atr': float(c.get('atr_pct', 0.5) or 0.5) / 100 * _ltp}
+                                    self.cm.update_candidate(_sym, _sid, _obs,
+                                        breakout_level=float(c.get('breakout_level', c.get('orb_high', 0)) or 0),
+                                        side=_side)
+                                    # Mark scored if entering
+                                    if d.get('status') == 'ENTER':
+                                        self.cm.mark_scored(_sym, float(d.get('final_score', 0)),
+                                            float(d.get('timing_score', 0) or 0), float(d.get('base_score', 0) or 0),
+                                            d.get('move_stage', 'NORMAL'), d.get('entry_type', 'NORMAL'),
+                                            float(d.get('position_pct', 1.0)))
+                                        self.cm.mark_decision(_sym, 'ENTER', '', 'ENTER')
+                                    else:
+                                        _veto = d.get('reason', d.get('status', 'WATCH'))
+                                        self.cm.mark_decision(_sym, d.get('status', 'WATCH'), '', d.get('status', 'WATCH'), _veto)
+                                # Log to observability candidate ledger
+                                if self.obs:
+                                    self.obs.log_candidate({
+                                        'scan_cycle': getattr(self, '_v11_scan_count', 0),
+                                        'symbol': _sym, 'security_id': _sid, 'side': _side,
+                                        'score': float(d.get('final_score', 0)),
+                                        'move_stage': d.get('move_stage'),
+                                        'entry_type': d.get('entry_type'),
+                                        'position_pct': float(d.get('position_pct', 1.0)),
+                                        'ltp': _ltp,
+                                        'rvol': float(c.get('rvol', 0) or 0),
+                                        'momentum_5m': float(c.get('momentum_5m', 0) or 0),
+                                        'final_action': d.get('status', 'WATCH'),
+                                        'reason': d.get('reason', ''),
+                                    })
+                                # Log missed opportunity for vetoed candidates
+                                if d.get('status') != 'ENTER' and self.obs:
+                                    self.obs.log_missed({
+                                        'symbol': _sym, 'security_id': _sid, 'side': _side,
+                                        'veto_reason': d.get('reason', d.get('status', 'WATCH')),
+                                        'score_at_veto': float(d.get('final_score', 0)),
+                                        'ltp_at_veto': _ltp,
+                                    })
+                            except Exception as _v11e:
+                                pass  # V11 observability must never crash the bot
+                            if isinstance(d,dict) and d.get("status")=="ENTER":
+                                ranked.append((d,c))
+
+                    ranked.sort(key=lambda x:(x[0]["final_score"],x[0]["edge"],x[0]["expected_move_pct"]),reverse=True)
+                    # One stock at a time per scan; existing positions still may be monitored.
+                    # V8.5.3: No new entries after 14:30 IST
+                    _now_ist = now_ist()
+                    if _now_ist.hour >= 14 and _now_ist.minute >= 30:
+                        if ranked: log.info(f'ENTRY CUTOFF 14:30: {len(ranked)} candidates skipped (market close approaching)')
+                        ranked = []
+                    if ranked:
+                        try:log_scan_cycle([(d["final_score"],{**c,"side":d.get("side",""),"setup_type":d.get("setup_type",""),"vwap":float(c.get("vwap",0) or 0),"atr_pct":float(c.get("atr_pct",0) or 0)}) for d,c in ranked],{"nifty":self._nifty_ltp,"regime":self._regime,"direction":self._market_direction},top_n=10)
+                        except Exception:pass
+                        if _V851_LOADED:
+                            # V8.5.3: Filter candidates through strategy engine first
+                            if _V853_LOADED:
+                                _v853_filtered = []
+                                for _d, _c in ranked:
+                                    try:
+                                        _cand = V853Candidate(
+                                            symbol=_c.get("symbol","?"), side=_d.get("side","LONG"),
+                                            ltp=float(_c.get("ltp",0)), atr=float(_c.get("atr_pct",0.5))/100*float(_c.get("ltp",1)),
+                                            raw_score=float(_d.get("final_score",0)), rs=float(_c.get("rs",0)),
+                                            rvol=float(_c.get("rvol",0)), vwap=float(_c.get("vwap",0)) if _c.get("vwap") else None,
+                                            momentum_5m=float(_c.get("momentum_5m",0)), momentum_15m=float(_c.get("momentum_15m",0)),
+                                            trigger=float(_d.get("entry_price",0)) if _d.get("entry_price") else None,
+                                            setup_type=_d.get("setup_type",""), regime=self._regime,
+                                            expected_move_pct=float(_d.get("expected_move_pct",0.6)) if _d.get("expected_move_pct") else 0.6
+                                        )
+                                        _decision = _v853_entry.evaluate(_cand)
+                                        # PATCH A: V8.5.5 early entries bypass timing gate
+                                        _is_early = _d.get("setup_type","") in ("EARLY_ACCELERATION","V855_EARLY_ACCELERATION")
+                                        _accept = (_decision.action == EntryAction.ENTER_NOW) or (_is_early and hasattr(EntryAction,"CONFIRMATION_PENDING") and _decision.action == EntryAction.CONFIRMATION_PENDING)
+                                        if _accept:
+                                            _v853_filtered.append((_d, _c))
+                                            _pass_type = "EARLY_BYPASS" if (_is_early and _decision.action != EntryAction.ENTER_NOW) else "ENTER_NOW"
+                                            log.info(f"V853 ENTER: {_c.get('symbol','?')}" + f" phase={_decision.phase.value} q={_decision.quality_score:.0f} t={_decision.timing_score:.0f} f={_decision.final_score:.0f} pass={_pass_type}")
+                                        else:
+                                            log.info(f"V853 SKIP: {_c.get('symbol','?')} action={_decision.action.value} reason={_decision.reason}")
+                                    except Exception as _e:
+                                        log.warning(f"V853 eval error {_c.get('symbol','?')}: {_e}")
+                                        log.error(f"V853 REJECT ON ERROR: {_c.get('symbol','?')}: {_e}")
+                                ranked = _v853_filtered
+                            # V8.5.1: Batch allocate ALL qualified, then execute
+                            allocated = allocate_batch(self, ranked)
+                            for _d, _c, _sizing in allocated:
+                                _ok, _reason = execute_entry_allocated(self, _c, _d, _sizing)
+                                if _ok:
+                                    log.info(f"V851 ENTRY OK: {_c.get('symbol','?')} qty={_sizing.get('qty',0)} score={_d.get('final_score',0):.1f} net_edge={_sizing.get('expected_net_edge_pct',0):.2f}%")
+                                    # V11: Log trade lifecycle event
+                                    if self.obs:
+                                        try:
+                                            self.obs.log_trade_event({
+                                                'event': 'POSITION_ACTIVE',
+                                                'symbol': _c.get('symbol', '?'),
+                                                'security_id': str(_c.get('security_id', '')),
+                                                'side': _d.get('side', 'LONG'),
+                                                'qty': _sizing.get('qty', 0),
+                                                'fill_price': _sizing.get('entry', 0),
+                                                'entry_score': _d.get('final_score', 0),
+                                                'entry_type': _d.get('entry_type', 'NORMAL'),
+                                                'position_pct': _d.get('position_pct', 1.0),
+                                            })
+                                        except Exception: pass
+                                    try:log_entry(_c,_d,{"price":_sizing.get("entry",0),"qty":_sizing.get("qty",0),"order_id":"V851"},_sizing,{"nifty":self._nifty_ltp,"regime":self._regime,"direction":self._market_direction})
+                                    except Exception:pass
+                                else:
+                                    log.info(f"V851 ENTRY FAIL: {_c.get('symbol','?')} reason={_reason}")
+                        else:
+                            # Fallback: old single-entry path
+                            for _d,_c in ranked:
+                                _ok,_reason=self.execute_entry(_c,_d)
+                                if _ok:log.info(f"ENTRY OK: {_c.get('symbol','?')}")
+                                elif _reason in ("POSITION_CAP","OPEN_RISK_CAP"):break
+                else:log.info("V8.4 ENTRY LOCK: %s",why)
+                # V11: End-of-scan housekeeping
+                _v11_scan_end = True
+                if self.cm:
+                    try: self.cm.save()
+                    except Exception: pass
+                if self.obs and _v11_trace:
+                    try:
+                        self.obs.mark_latency(_v11_trace, 'scan_complete')
+                        self.obs.finish_latency_trace(_v11_trace)
+                    except Exception: pass
+                next_scan=time.monotonic()+self.rescan_minutes*60
+            time.sleep(2)
+        # --- EOD BROKER FORCE-CLOSE (orphan safety net) ---
+        try:
+            broker_pos = self.dhan.get_positions() or []
+            for bp in broker_pos:
+                nq = int(bp.get('netQty', 0))
+                if nq == 0: continue
+                sid_b = str(bp.get('securityId', ''))
+                sym = bp.get('tradingSymbol', '?')
+                if sid_b in self.active_positions:
+                    continue  # will be closed by normal EOD loop below
+                txn = 'SELL' if nq > 0 else 'BUY'
+                log.warning(f"EOD ORPHAN FORCE-CLOSE: {sym} sid={sid_b} netQty={nq} -> {txn} {abs(nq)}")
+                try:
+                    self.dhan.place_order(sid_b, abs(nq), 0, txn, 'MARKET')
+                except Exception as ce:
+                    log.error(f"EOD ORPHAN CLOSE FAILED: {sym} {sid_b}: {ce}")
+        except Exception as e:
+            log.error(f"EOD broker reconcile failed: {e}")
+        # --- END EOD BROKER FORCE-CLOSE ---
+        for sid in list(self.active_positions):
+            p=self.active_positions[sid];px=self.fetch_ltp_concurrent([sid]).get(sid,p["entry"]);self.close_position(sid,"MANDATORY_EOD",px)
+        # V8.6.0 EOD verify
+        try:
+            if self.ei:
+                _eod_r = self.ei.eod_force_close()
+                log.info(f"EI EOD: local={_eod_r.get('closed_local',0)} orphans={_eod_r.get('closed_orphans',0)}")
+        except Exception as _e:
+            log.error(f'EI EOD error: {_e}')
+        self._run_supporting_modules();log.info("V8.4 EOD complete")
+
+if __name__=="__main__":
+    # V10.1-R crash-loop guard: an unhandled exception mid-session is logged
+    # in full and exits 0 so systemd (Restart=on-failure) does NOT spin a
+    # 3.5-min restart loop. The next scheduled cron start restarts cleanly.
+    import traceback as _tb
+    try:
+        TradingBotV84(dry_run=os.getenv("V82_DRY_RUN","0")=="1").run()
+    except KeyboardInterrupt:
+        log.info("Interrupted — exiting cleanly")
+    except Exception as _fatal:
+        log.error("FATAL_RUN_EXCEPTION: %s", _fatal)
+        log.error(_tb.format_exc())
+        # Exit 0 to prevent systemd Restart=on-failure crash loop.
+        import sys as _sys
+        _sys.exit(0)

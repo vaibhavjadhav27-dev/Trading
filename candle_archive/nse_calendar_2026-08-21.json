@@ -1,0 +1,68 @@
+{
+  "date": "2026-08-21",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "MEDANTA",
+      "company": "Global Health Limited",
+      "desc": "Updates",
+      "an_dt": "21-Aug-2026 18:55:42",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "PRESTIGE",
+      "company": "Prestige Estates Projects Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "21-Aug-2026 18:52:52",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "VARROC",
+      "company": "Varroc Engineering Limited",
+      "desc": "General Updates",
+      "an_dt": "21-Aug-2026 18:50:40",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "FEDERALBNK",
+      "company": "The Federal Bank  Limited",
+      "desc": "General Updates",
+      "an_dt": "21-Aug-2026 18:47:50",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "SBIN",
+      "company": "State Bank of India",
+      "desc": "Allotment of Securities",
+      "an_dt": "21-Aug-2026 18:47:36",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "SIGACHI",
+      "company": "Sigachi Industries Limited",
+      "purpose": "Fund Raising",
+      "date": "22-Aug-2026"
+    },
+    {
+      "symbol": "GABRIEL",
+      "company": "Gabriel India Limited",
+      "purpose": "Fund Raising",
+      "date": "24-Aug-2026"
+    },
+    {
+      "symbol": "UCOBANK",
+      "company": "UCO Bank",
+      "purpose": "Fund Raising",
+      "date": "24-Aug-2026"
+    },
+    {
+      "symbol": "TEAMLEASE",
+      "company": "Teamlease Services Limited",
+      "purpose": "Other business matters",
+      "date": "25-Aug-2026"
+    }
+  ]
+}

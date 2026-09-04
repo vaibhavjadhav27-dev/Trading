@@ -1,0 +1,55 @@
+{
+  "date": "2026-07-24",
+  "scan_time": "13:31:23",
+  "candidates_found": 0,
+  "new_entries": [],
+  "active_positions": [
+    {
+      "ticker": "GABRIEL",
+      "entry_price": 1488.5,
+      "entry_date": "2026-07-22",
+      "qty": 8,
+      "sl": 1369.42,
+      "target": 1786.2,
+      "trailing_sl": 1369.42,
+      "score": 99.4,
+      "status": "PAPER_ACTIVE",
+      "peak_price": 1488.5,
+      "notional": 11908.0,
+      "risk_pct": 8.0,
+      "days_held": 2
+    },
+    {
+      "ticker": "SHALPAINTS",
+      "entry_price": 69.05,
+      "entry_date": "2026-07-22",
+      "qty": 181,
+      "sl": 63.53,
+      "target": 82.86,
+      "trailing_sl": 63.53,
+      "score": 99.4,
+      "status": "PAPER_ACTIVE",
+      "peak_price": 69.05,
+      "notional": 12498.05,
+      "risk_pct": 8.0,
+      "days_held": 2
+    },
+    {
+      "ticker": "BECTORFOOD",
+      "entry_price": 211.3,
+      "entry_date": "2026-07-22",
+      "qty": 59,
+      "sl": 194.4,
+      "target": 253.56,
+      "trailing_sl": 194.4,
+      "score": 96.8,
+      "status": "PAPER_ACTIVE",
+      "peak_price": 211.3,
+      "notional": 12466.7,
+      "risk_pct": 8.0,
+      "days_held": 2
+    }
+  ],
+  "closed_positions": [],
+  "top_20": []
+}

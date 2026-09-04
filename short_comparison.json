@@ -1,0 +1,386 @@
+{
+  "long": [
+    {
+      "t": "AFFLE",
+      "pnl": -4.8,
+      "type": "EOD",
+      "score": 140
+    },
+    {
+      "t": "AMBUJACEM",
+      "pnl": 7.1,
+      "type": "TARGET",
+      "score": 70
+    },
+    {
+      "t": "ANANTRAJ",
+      "pnl": -7.0,
+      "type": "EOD",
+      "score": 120
+    },
+    {
+      "t": "ASAHIINDIA",
+      "pnl": -10.2,
+      "type": "SL",
+      "score": 120
+    },
+    {
+      "t": "ASHOKLEY",
+      "pnl": -1.0,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "AUBANK",
+      "pnl": -11.5,
+      "type": "SL",
+      "score": 110
+    },
+    {
+      "t": "AXISBANK",
+      "pnl": -17.8,
+      "type": "SL",
+      "score": 150
+    },
+    {
+      "t": "BAJAJELEC",
+      "pnl": 1.2,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "BAJAJFINSV",
+      "pnl": -20.7,
+      "type": "SL",
+      "score": 115
+    },
+    {
+      "t": "BALKRISIND",
+      "pnl": -24.0,
+      "type": "SL",
+      "score": 100
+    },
+    {
+      "t": "BANCOINDIA",
+      "pnl": -1.3,
+      "type": "EOD",
+      "score": 120
+    },
+    {
+      "t": "BEL",
+      "pnl": -0.4,
+      "type": "EOD",
+      "score": 70
+    },
+    {
+      "t": "BEML",
+      "pnl": -20.5,
+      "type": "SL",
+      "score": 115
+    },
+    {
+      "t": "BERGEPAINT",
+      "pnl": -3.6,
+      "type": "EOD",
+      "score": 120
+    },
+    {
+      "t": "ADANIENSOL",
+      "pnl": 27.9,
+      "type": "TARGET",
+      "score": 70
+    },
+    {
+      "t": "ADANIENT",
+      "pnl": -7.7,
+      "type": "EOD",
+      "score": 65
+    },
+    {
+      "t": "ADANIGREEN",
+      "pnl": 25.6,
+      "type": "TARGET",
+      "score": 115
+    },
+    {
+      "t": "AMBUJACEM",
+      "pnl": -3.3,
+      "type": "EOD",
+      "score": 125
+    },
+    {
+      "t": "ANGELONE",
+      "pnl": 5.6,
+      "type": "TARGET",
+      "score": 110
+    },
+    {
+      "t": "APTUS",
+      "pnl": 3.2,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "ATGL",
+      "pnl": -7.9,
+      "type": "SL",
+      "score": 125
+    },
+    {
+      "t": "BAJFINANCE",
+      "pnl": 6.8,
+      "type": "EOD",
+      "score": 120
+    },
+    {
+      "t": "BERGEPAINT",
+      "pnl": 9.0,
+      "type": "TARGET",
+      "score": 120
+    },
+    {
+      "t": "ABDL",
+      "pnl": 2.6,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "ACC",
+      "pnl": 22.5,
+      "type": "TARGET",
+      "score": 70
+    },
+    {
+      "t": "ANANTRAJ",
+      "pnl": 11.2,
+      "type": "TARGET",
+      "score": 95
+    },
+    {
+      "t": "ANGELONE",
+      "pnl": -1.9,
+      "type": "EOD",
+      "score": 75
+    },
+    {
+      "t": "APTUS",
+      "pnl": -1.5,
+      "type": "EOD",
+      "score": 115
+    },
+    {
+      "t": "ASHOKLEY",
+      "pnl": 1.5,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "AVANTIFEED",
+      "pnl": 18.4,
+      "type": "TARGET",
+      "score": 85
+    },
+    {
+      "t": "BAJAJELEC",
+      "pnl": 4.9,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "BALKRISIND",
+      "pnl": 0.1,
+      "type": "EOD",
+      "score": 75
+    },
+    {
+      "t": "BALRAMCHIN",
+      "pnl": -6.6,
+      "type": "SL",
+      "score": 120
+    },
+    {
+      "t": "BANCOINDIA",
+      "pnl": 0.1,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "BATAINDIA",
+      "pnl": 12.3,
+      "type": "TARGET",
+      "score": 120
+    },
+    {
+      "t": "BHEL",
+      "pnl": -4.6,
+      "type": "SL",
+      "score": 125
+    },
+    {
+      "t": "ADANIENSOL",
+      "pnl": 28.6,
+      "type": "TARGET",
+      "score": 70
+    },
+    {
+      "t": "AETHER",
+      "pnl": -4.5,
+      "type": "EOD",
+      "score": 115
+    },
+    {
+      "t": "APCL",
+      "pnl": 1.8,
+      "type": "TARGET",
+      "score": 110
+    },
+    {
+      "t": "ASAHIINDIA",
+      "pnl": -9.9,
+      "type": "SL",
+      "score": 120
+    },
+    {
+      "t": "ASIANPAINT",
+      "pnl": -11.6,
+      "type": "EOD",
+      "score": 110
+    },
+    {
+      "t": "ASTRAL",
+      "pnl": 23.0,
+      "type": "TARGET",
+      "score": 110
+    },
+    {
+      "t": "ATGL",
+      "pnl": -7.8,
+      "type": "SL",
+      "score": 75
+    },
+    {
+      "t": "AUBANK",
+      "pnl": 0.7,
+      "type": "EOD",
+      "score": 70
+    },
+    {
+      "t": "AUROPHARMA",
+      "pnl": 25.6,
+      "type": "TARGET",
+      "score": 85
+    },
+    {
+      "t": "AXISBANK",
+      "pnl": 4.7,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "BAJFINANCE",
+      "pnl": 4.0,
+      "type": "EOD",
+      "score": 110
+    },
+    {
+      "t": "BEML",
+      "pnl": 14.2,
+      "type": "EOD",
+      "score": 85
+    }
+  ],
+  "short": [
+    {
+      "t": "ADANIENSOL",
+      "pnl": 13.7,
+      "type": "EOD",
+      "score": 120
+    },
+    {
+      "t": "BANKBARODA",
+      "pnl": 0.7,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "BHARTIARTL",
+      "pnl": 20.2,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "BHEL",
+      "pnl": -4.5,
+      "type": "SL",
+      "score": 75
+    },
+    {
+      "t": "ASTRAL",
+      "pnl": -17.2,
+      "type": "SL",
+      "score": 115
+    },
+    {
+      "t": "BEL",
+      "pnl": 2.7,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "BHEL",
+      "pnl": -10.1,
+      "type": "SL",
+      "score": 75
+    },
+    {
+      "t": "ADANIGREEN",
+      "pnl": -18.9,
+      "type": "SL",
+      "score": 95
+    },
+    {
+      "t": "AXISBANK",
+      "pnl": 4.3,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "BEL",
+      "pnl": -1.4,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "BHARATFORG",
+      "pnl": -24.0,
+      "type": "SL",
+      "score": 105
+    },
+    {
+      "t": "ADANIENT",
+      "pnl": 8.5,
+      "type": "EOD",
+      "score": 85
+    },
+    {
+      "t": "ANGELONE",
+      "pnl": 2.5,
+      "type": "EOD",
+      "score": 95
+    },
+    {
+      "t": "BEL",
+      "pnl": -1.8,
+      "type": "EOD",
+      "score": 85
+    }
+  ],
+  "regimes": {
+    "2026-07-15": "CHOPPY",
+    "2026-07-16": "NORMAL",
+    "2026-07-19": "NORMAL",
+    "2026-07-20": "CHOPPY",
+    "2026-07-21": "NORMAL"
+  },
+  "skipped_not_shortable": 116
+}

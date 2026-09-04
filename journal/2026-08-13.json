@@ -1,0 +1,11 @@
+{
+  "trade": {
+    "symbol": "SHORTX",
+    "side": "SHORT",
+    "entry": 100.0,
+    "qty": 10,
+    "score": 82.0,
+    "tier": 4.5,
+    "entry_time": "2026-08-13T13:08:11.365118"
+  }
+}

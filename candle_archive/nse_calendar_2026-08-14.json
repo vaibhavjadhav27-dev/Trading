@@ -1,0 +1,63 @@
+{
+  "date": "2026-08-14",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "CHEMPLASTS",
+      "company": "Chemplast Sanmar Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "14-Aug-2026 18:58:12",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "ZEEMEDIA",
+      "company": "Zee Media Corporation Limited",
+      "desc": "Monitoring Agency Report",
+      "an_dt": "14-Aug-2026 18:57:34",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "ELGIEQUIP",
+      "company": "Elgi Equipments Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "14-Aug-2026 18:56:26",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "NATCOPHARM",
+      "company": "Natco Pharma Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "14-Aug-2026 18:55:47",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TIINDIA",
+      "company": "Tube Investments of India Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "14-Aug-2026 18:55:08",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TDPOWERSYS",
+      "company": "TD Power Systems Limited",
+      "desc": "Arrangements for strategic, technical, manufacturing, or marketing tie up",
+      "an_dt": "14-Aug-2026 18:53:22",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "BALKRISIND",
+      "company": "Balkrishna Industries Limited",
+      "purpose": "Fund Raising",
+      "date": "18-Aug-2026"
+    },
+    {
+      "symbol": "BPCL",
+      "company": "Bharat Petroleum Corporation Limited",
+      "purpose": "Fund Raising",
+      "date": "18-Aug-2026"
+    }
+  ]
+}

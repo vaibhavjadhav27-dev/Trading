@@ -1,0 +1,249 @@
+--- trading_bot_v84.py
++++ trading_bot_v84_v854.py
+@@ -38,6 +38,7 @@
+ from v84_strategy import final_decision
+ from v84.config import RISK, INTRADAY
+ from v84.indicators import vwap
++from V854_UNIFIED_PATCH import (structural_stop as v854_structural_stop, broker_valid_trigger, trail_trigger as v854_trail_trigger, evaluate_profit_exit as v854_evaluate_profit_exit, reconcile_broker as v854_reconcile_broker, install_protective_sl as v854_install_protective_sl, modify_sl as v854_modify_sl, validate_entry_audit as v854_validate_entry_audit, append_audit_event as v854_append_audit, correlation_id as v854_correlation_id)
+ 
+ log=logging.getLogger("V84_PROD")
+ RISK_FILE=Path("v84_daily_risk.json")
+@@ -186,15 +187,30 @@
+             self.emergency_exit(sid,fq,side);return False,"broker_position_mismatch"
+         # Keep the strategy-derived stop, but never allow a stop on the wrong side of fill.
+         if (side=="LONG" and stop>=fp) or (side=="SHORT" and stop<=fp):
+-            stop=round(fp*(1-0.0075),2) if side=="LONG" else round(fp*(1+0.0075),2)
++            _atr=float(c.get("atr",0) or 0)
++            if _atr<=0:
++                _atr=float(c.get("atr_pct",0) or 0)/100.0*fp
++            if _atr<=0:
++                _atr=max(fp*0.005,0.05)
++            try:
++                stop=v854_structural_stop(side,fp,_atr,float(c.get("support",0) or 0) or None,float(c.get("resistance",0) or 0) or None,float(d.get("entry_price",0) or 0) or None)
++            except Exception:
++                stop=fp*(0.9925 if side=="LONG" else 1.0075)
++            stop=broker_valid_trigger(side,stop,fp,_atr) or 0.0
++            if stop<=0:
++                self.emergency_exit(sid,fq,side); return False,"NO_VALID_STRUCTURAL_STOP"
+         sl=self.dhan.place_hard_sl(sid,fq,side,round(stop,2));sl_oid=(sl or {}).get("orderId") if isinstance(sl,dict) else None
+         if not sl_oid:
+             self.emergency_exit(sid,fq,side);return False,"hard_sl_not_accepted"
+         st=(self.dhan.get_order_status(sl_oid) or {}).get("orderStatus","").upper()
+         if st not in ("PENDING","TRANSIT","TRADED","PART_TRADED"):
+             self.emergency_exit(sid,fq,side);return False,f"hard_sl_{st or 'UNKNOWN'}"
+-        self.active_positions[sid]={"symbol":c.get("symbol","?"),"security_id":sid,"side":side,"qty":fq,"entry":fp,"sl":stop,"sl_order_id":sl_oid,"peak":fp,"score":float(d["final_score"]),"mode":d["setup_type"],"target":float(d["target"]),"risk_pct":risk_pct,"best_r":0.0,"weak_count":0,"entry_time":now_ist().isoformat()}
++        self.active_positions[sid]={"symbol":c.get("symbol","?"),"security_id":sid,"side":side,"qty":fq,"entry":fp,"initial_sl":stop,"sl":stop,"sl_order_id":sl_oid,"peak":fp,"score":float(d["final_score"]),"mode":d["setup_type"],"target":float(d["target"]),"risk_pct":risk_pct,"best_r":0.0,"weak_count":0,"max_profit_pct":0.0,"entry_time":now_ist().isoformat(),"source":"V854_BOT","rs":float(c.get("rs",d.get("rs",0)) or 0),"atr":float(c.get("atr",c.get("atr_pct",0)) or 0),"support":float(c.get("support",0) or 0),"resistance":float(c.get("resistance",0) or 0),"trigger":float(d.get("entry_price",0) or 0)}
+         self._save_state();_event("v84_entry",self.active_positions[sid])
++        _v854_audit={"event":"ENTRY","symbol":c.get("symbol","?"),"security_id":sid,"side":side,"entry_price":fp,"fill_price":fp,"qty":fq,"raw_score":float(c.get("raw_score",d.get("final_score",0)) or 0),"final_score":float(d.get("final_score",0)),"initial_sl":stop,"risk_per_share":abs(fp-stop),"expected_move_pct":float(d.get("expected_move_pct",0) or 0),"setup_type":d.get("setup_type",""),"entry_time":now_ist().isoformat(),"order_id":oid,"sl_order_id":sl_oid}
++        _ok,_why=v854_validate_entry_audit(_v854_audit)
++        _v854_audit["validation"]=_why; v854_append_audit(_v854_audit)
++        if not _ok: log.error("V854 ENTRY AUDIT INVALID %s: %s",c.get("symbol","?"),_why)
+         try:import trade_journal;trade_journal.log_trade({"symbol":c.get("symbol"),"side":side,"entry":fp,"qty":fq,"score":float(d["final_score"]),"mode":d["setup_type"],"entry_time":now_ist().isoformat()})
+         except Exception:pass
+         try:log_entry(c,d,{"price":fp,"qty":fq,"order_id":oid},{"total_score":float(d.get("final_score",0)),"market":float(d.get("market_score",0)),"sector":float(d.get("sector_score",0)),"rs":float(d.get("rs_score",0)),"momentum":float(d.get("momentum_score",0)),"rvol":float(d.get("rvol_score",0)),"vwap_trend":float(d.get("vwap_score",0)),"setup_quality":float(d.get("setup_quality",0)),"entry_quality":float(d.get("entry_quality",0))},{"nifty":self._nifty_ltp,"banknifty":self._banknifty_ltp,"regime":self._regime,"direction":self._market_direction,"vix":0,"leaders":self._leaders,"laggards":self._laggards})
+@@ -223,83 +239,81 @@
+         return ok
+ 
+     def monitor_positions(self):
+-        if not self.active_positions:return
++        """V8.5.4 authoritative position manager.
++
++        Order: obtain market context -> update MFE -> evaluate thesis ->
++        protect broker-side SL -> software backup -> persist.  Dhan remains
++        authoritative for actual quantity/position state.
++        """
++        if not self.active_positions:
++            return
+         prices=self.fetch_ltp_concurrent(list(self.active_positions.keys()))
+         for sid,p in list(self.active_positions.items()):
+             px=float(prices.get(sid,0) or 0)
+-            if px<=0:continue
+-            entry=float(p["entry"]);side=p["side"];risk_per_share=max(abs(entry-float(p["sl"])),0.01)
+-            pnl=((px-entry)/entry*100) if side=="LONG" else ((entry-px)/entry*100)
+-            r=((px-entry)/risk_per_share) if side=="LONG" else ((entry-px)/risk_per_share)
+-            # SOFTWARE SL BACKUP: exit if price breaches SL level (even if Dhan SL not placed)
+-            _sl_price=float(p.get("sl",0))
+-            if _sl_price>0:
+-                if (side=="LONG" and px<=_sl_price) or (side=="SHORT" and px>=_sl_price):
+-                    self.close_position(sid,"SOFTWARE_SL",px);continue
+-            # V8.5.3 EXIT ENGINE: multi-factor reversal evaluation
+-            if _V853_LOADED and float(p.get("entry",0))>0:
++            if px<=0: continue
++            side=str(p.get("side","LONG")).upper()
++            entry=float(p.get("entry",px)); initial_sl=float(p.get("initial_sl",p.get("sl",0)))
++            # Fetch OHLC BEFORE V8.5.3/V8.5.4 evaluation. This fixes the old
++            # df-before-assignment bug that was silently swallowed by except pass.
++            df=self._df(sid)
++            features={"momentum_5m":0.0,"momentum_15m":0.0,"vwap_reversal":False,
++                      "rs":0.0,"structure_break":False,"volume_climax":False,
++                      "price_progress_stalling":False,"setup_invalidated":False}
++            if df is not None and len(df)>=3:
+                 try:
+-                    _pos = V853Position(symbol=p.get("symbol","?"),side=side,entry=float(p["entry"]),stop=_sl_price,atr=float(p.get("sl",0))*0.0075 if _sl_price else 1.0,peak=float(p.get("peak",px)))
+-                    _exit_ctx={"momentum_5m":0,"momentum_15m":0,"vwap":0,"rs":0,"structure_break":confirmed_failure,"volume_climax":False,"price_progress_stalling":False,"setup_invalidated":False}
+-                    if df is not None and len(df)>=3:
+-                        _closes=[float(x) for x in df["close"].tail(3)]
+-                        _exit_ctx["momentum_5m"]=(_closes[-1]-_closes[-2])/_closes[-2]*100 if _closes[-2] else 0
+-                        if len(df)>=6:_exit_ctx["momentum_15m"]=(_closes[-1]-float(df["close"].iloc[-4]))/float(df["close"].iloc[-4])*100
+-                        from v82_strategy import vwap as _vw_fn
+-                        _exit_ctx["vwap"]=float(_vw_fn(df))
+-                    _exit_result=_v853_exit.evaluate(_pos,px,_exit_ctx)
+-                    if _exit_result.get("action")==ExitAction.EXIT.value:
+-                        self.close_position(sid,f"V853_{_exit_result.get('reason','REVERSAL')}",px);continue
+-                except Exception as _e:
+-                    pass  # V853 exit eval failed — fall through to existing logic
+-            p["best_r"]=max(float(p.get("best_r",0)),r)
+-            p["peak"]=max(float(p.get("peak",entry)),px) if side=="LONG" else min(float(p.get("peak",entry)),px)
+-            df=self._df(sid); confirmed_failure=False
+-            if df is not None and len(df)>=3:
+-                vw=vwap(df); closes=[float(x) for x in df.close.tail(2)]
+-                if side=="LONG":confirmed_failure=(len(closes)==2 and closes[-1]<vw and closes[-2]<vw)
+-                else:confirmed_failure=(len(closes)==2 and closes[-1]>vw and closes[-2]>vw)
+-            reason=None
+-            if p["best_r"]>=2.0:
+-                giveback=(p["peak"]-px)/p["peak"] if side=="LONG" else (px-p["peak"])/p["peak"]
+-                # Conditional wider giveback: only if momentum/structure still strong
+-                _mom_strong=False
+-                if df is not None and len(df)>=3:
+-                    _c2=float(df["close"].iloc[-1]);_c3=float(df["close"].iloc[-2])
+-                    _mom_strong=(side=="LONG" and _c2>_c3) or (side=="SHORT" and _c2<_c3)
+-                # Wider tolerance ONLY if momentum supports holding
+-                if _mom_strong and not confirmed_failure:
+-                    _giveback_threshold=0.006 if p["best_r"]>=3.0 else 0.0045 if p["best_r"]>=2.5 else 0.0035
++                    closes=[float(x) for x in df["close"].tail(6)]
++                    features["momentum_5m"]=(closes[-1]-closes[-2])/closes[-2]*100 if closes[-2] else 0.0
++                    if len(closes)>=4: features["momentum_15m"]=(closes[-1]-closes[-4])/closes[-4]*100 if closes[-4] else 0.0
++                    vw=float(vwap(df)); features["vwap"]=vw
++                    features["vwap_reversal"]=(px<vw if side=="LONG" else px>vw)
++                    c1,c2=closes[-2],closes[-1]
++                    vwap_break=(c1<vw and c2<vw) if side=="LONG" else (c1>vw and c2>vw)
++                    support=float(p.get("support",0) or 0); resistance=float(p.get("resistance",0) or 0)
++                    structure_break=vwap_break
++                    if side=="LONG" and support>0 and px<support: structure_break=True
++                    if side=="SHORT" and resistance>0 and px>resistance: structure_break=True
++                    features["structure_break"]=structure_break
++                    features["price_progress_stalling"]=abs(features["momentum_5m"])<0.15
++                    if "volume" in df.columns and len(df)>=6:
++                        vols=[float(x) for x in df["volume"].tail(6)]
++                        avgv=sum(vols[:-1])/max(1,len(vols[:-1])); features["volume_climax"]=vols[-1]>=2.0*avgv if avgv>0 else False
++                except Exception as e:
++                    log.warning("V854 feature build failed %s: %s", p.get("symbol",sid), e)
++            # Relative strength can be retained from the entry snapshot; if absent,
++            # do not invent a reversal signal.
++            features["rs"]=float(p.get("rs",0) or 0)
++            p["broker_net_qty"]=p.get("qty",0)
++            # Software stop is a BACKUP only. The broker-side SL is the primary control.
++            if initial_sl<=0:
++                initial_sl=entry*(0.9925 if side=="LONG" else 1.0075)
++                p["initial_sl"]=initial_sl; p["sl"]=initial_sl
++            result=v854_evaluate_profit_exit(p,px,features)
++            _momentum_ok = (features["momentum_5m"] >= 0) if side=="LONG" else (features["momentum_5m"] <= 0)
++            new_trigger=v854_trail_trigger(p,px,momentum_ok=_momentum_ok,structure_ok=not features["structure_break"])
++            old_sl=float(p.get("sl",initial_sl) or initial_sl)
++            # Move broker SL monotonically from ORIGINAL risk. Never loosen it.
++            should_modify=(new_trigger is not None and ((side=="LONG" and new_trigger>old_sl) or (side=="SHORT" and new_trigger<old_sl)))
++            if should_modify and p.get("sl_order_id"):
++                mod=v854_modify_sl(self.dhan,p["sl_order_id"],int(p.get("qty",0)),side,new_trigger,px)
++                if mod:
++                    p["sl"]=new_trigger
++                    log.info("V854 PROFIT LOCK %s %s sl=%.2f bestR=%.2f",p.get("symbol",sid),side,new_trigger,float(p.get("best_r",0)))
++            elif should_modify and not p.get("sl_order_id"):
++                repl=v854_install_protective_sl(self.dhan,sid,int(p.get("qty",0)),side,new_trigger,px)
++                if repl and isinstance(repl,dict) and repl.get("orderId"):
++                    p["sl_order_id"]=repl.get("orderId"); p["sl"]=new_trigger
+                 else:
+-                    _giveback_threshold=0.0035  # Standard tight trail if momentum weakening
+-                if giveback>=_giveback_threshold and confirmed_failure:reason="PROFIT_REVERSAL_2R"
+-                elif giveback>=0.008:reason="HARD_GIVEBACK_CAP"
+-            elif p["best_r"]>=1.0 and confirmed_failure:
+-                p["weak_count"]=int(p.get("weak_count",0))+1
+-                # PATCH #4: Require 3 consecutive weak checks (not 2) for structure exit
+-                if p["weak_count"]>=3:reason="STRUCTURE_FAILURE"
+-            else:p["weak_count"]=0
+-            if reason:self.close_position(sid,reason,px)
+-            elif _V851_LOADED and float(p.get("best_r",0)) >= 1.0 and p.get("sl_order_id"):
+-                # V8.5.1: Broker-side trailing — move SL as profit develops
+-                # Calculate actual momentum health (not hardcoded True)
+-                _momentum_ok = True
+-                if df is not None and len(df) >= 3:
+-                    _closes = [float(x) for x in df["close"].tail(3)]
+-                    if side == "LONG":
+-                        _momentum_ok = _closes[-1] >= _closes[-2]  # price holding/rising
+-                    else:
+-                        _momentum_ok = _closes[-1] <= _closes[-2]  # price holding/falling
+-                _new_trail = desired_trailing_stop(p, px, _momentum_ok, not confirmed_failure)
+-                _old_sl = float(p.get("sl", 0))
+-                # LONG: SL moves UP (new > old). SHORT: SL moves DOWN (new < old).
+-                _should_modify = (_new_trail > _old_sl) if side == "LONG" else (_new_trail < _old_sl) if _old_sl > 0 else False
+-                if _new_trail and _should_modify:
+-                    _mod = modify_pending_sl(self.dhan, p["sl_order_id"], int(p["qty"]), _new_trail, side, px)
+-                    if _mod and isinstance(_mod, dict):
+-                        p["sl"] = _new_trail
+-                        p["sl_order_id"] = _mod.get("orderId", p["sl_order_id"])
+-                        log.info(f"TRAIL SL: {p.get('symbol','?')} {side} new_sl={_new_trail:.2f} R={p['best_r']:.1f}")
++                    log.error("V854 PROTECTION_FAILED %s",p.get("symbol",sid))
++                    # Do not silently continue as if protected. Use existing emergency safety policy.
++                    self.emergency_exit(sid,int(p.get("qty",0)),side); continue
++            # Confirmed strategy exit comes after protection update, not before it.
++            if result.get("action")=="EXIT":
++                self.close_position(sid,"V854_"+str(result.get("reason","REVERSAL")),px); continue
++            # Software backup if the live price has actually crossed the current broker stop.
++            sl=float(p.get("sl",initial_sl) or initial_sl)
++            if (side=="LONG" and px<=sl) or (side=="SHORT" and px>=sl):
++                self.close_position(sid,"V854_SOFTWARE_SL_BACKUP",px); continue
++            v854_append_audit({"event":"POSITION_SNAPSHOT","time":now_ist().isoformat(),"symbol":p.get("symbol",sid),"security_id":sid,"side":side,"qty":int(p.get("qty",0)),"entry":entry,"ltp":px,"sl":sl,"peak":p.get("peak"),"best_r":p.get("best_r"),"current_r":result.get("current_r"),"reversal_score":result.get("reversal_score"),"next_action":result.get("action"),"reason":result.get("reason")})
+         self._save_state()
+ 
+     def run(self):
+@@ -307,7 +321,7 @@
+         ok,msg=self.dhan.preflight(enforce_static_ip=enforce)
+         if not ok and not self.dry_run:raise RuntimeError("V8.4 PREFLIGHT FAILED: "+msg)
+         log.info("V8.4 PREFLIGHT: %s",msg)
+-        log.info("ENGINE_VERSION=8.5.1 | PATCHES=V851_FULL")
++        log.info("ENGINE_VERSION=8.5.4 | PATCHES=V851+V853+V854_UNIFIED")
+         if _V851_LOADED:
+             install_gateway_patch(self.dhan)
+             log.info("V8.5.1 gateway patch installed (SL-M fix + tick rounding)")
+@@ -315,11 +329,14 @@
+         self._nifty_ltp=0.0; self._banknifty_ltp=0.0
+         self._regime="NORMAL"; self._market_direction="NEUTRAL"
+         self._leaders=[]; self._laggards=[]
+-        if _V851_LOADED:
+-            ok, msg = safe_reconcile(self)
+-            log.info(f"V851 safe_reconcile: {msg}")
+-        else:
+-            self.reconcile_broker()
++        try:
++            _v854_recon=v854_reconcile_broker(self, deep=True)
++            log.info("V854 startup reconciliation: %s", _v854_recon)
++            v854_append_audit({"event":"RECONCILIATION","time":now_ist().isoformat(),**_v854_recon})
++        except Exception as _e:
++            log.exception("V854 startup reconciliation failed: %s", _e)
++        _v854_next_recon=time.monotonic()+60
++        _v854_next_audit=time.monotonic()+900
+         while now_ist()<ist_time(9,30):time.sleep(5)
+         self.check_market_quality();self.snapshot_market();self.select_candidates()
+         next_scan=time.monotonic();next_snapshot=time.monotonic()
+@@ -327,6 +344,22 @@
+             self._load_v84_risk()
+             if time.monotonic()>=next_snapshot:self.snapshot_market();next_snapshot=time.monotonic()+self.snapshot_minutes*60
+             self.monitor_positions()
++            if time.monotonic() >= _v854_next_recon:
++                try:
++                    _v854_recon=v854_reconcile_broker(self, deep=False)
++                    log.info("V854 position reconciliation: %s", _v854_recon)
++                    v854_append_audit({"event":"RECONCILIATION","time":now_ist().isoformat(),**_v854_recon})
++                except Exception as _e:
++                    log.exception("V854 reconciliation failed: %s", _e)
++                _v854_next_recon=time.monotonic()+60
++            if time.monotonic() >= _v854_next_audit:
++                try:
++                    _v854_audit=v854_reconcile_broker(self, deep=True)
++                    log.info("V854 15m deep broker audit: %s", _v854_audit)
++                    v854_append_audit({"event":"DEEP_BROKER_AUDIT","time":now_ist().isoformat(),**_v854_audit})
++                except Exception as _e:
++                    log.exception("V854 deep audit failed: %s", _e)
++                _v854_next_audit=time.monotonic()+900
+             now=now_ist();hh,mm=map(int,self.entry_cutoff.split(":"))
+             if now<ist_time(hh,mm) and time.monotonic()>=next_scan:
+                 self.check_market_quality();self.select_candidates()

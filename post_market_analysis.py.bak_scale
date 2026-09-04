@@ -1,0 +1,552 @@
+import os
+#!/usr/bin/env python3
+import json, logging, boto3, requests
+import glob
+from gainer_enrichment import enrich_gainers, build_data_driven_prompt
+from datetime import datetime, date
+from secrets_manager import get_parameter
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+log = logging.getLogger('PostMarketAnalysis')
+
+GEMINI_MODEL = 'gemini-3.6-flash'
+GEMINI_URL = 'https://generativelanguage.googleapis.com/v1/models/{model}:generateContent'
+DHAN_BASE = 'https://api.dhan.co/v2'
+NL = chr(10)
+
+
+def get_dhan_headers():
+    token = get_parameter('/trading-engine/dhan/access-token')
+    client_id = get_parameter('/trading-engine/dhan/client-id')
+    return {'access-token': token, 'client-id': client_id, 'Content-Type': 'application/json'}
+
+
+def get_nse_top_gainers():
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        session = requests.Session()
+        session.get('https://www.nseindia.com', headers=headers, timeout=10)
+        resp = session.get('https://www.nseindia.com/api/live-analysis-variations?index=gainers',
+                           headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw = data.get('NIFTY', data.get('allSec', data.get('data', [])))
+            items = raw[:10] if isinstance(raw, list) else []
+            if not items:
+                return get_top_gainers_from_dhan()
+            return [{'ticker': i.get('symbol',''), 'ltp': i.get('ltp',0),
+                     'prev_close': i.get('previousClose',0), 'gain_pct': i.get('pChange',0)}
+                    for i in items]
+    except Exception as e:
+        log.warning(f'NSE fetch failed: {e}')
+    return get_top_gainers_from_dhan()
+
+
+def get_top_gainers_from_dhan():
+    """Get gainers using prev_close_cache + intraday last candle"""
+    import pandas as pd
+    import time
+    headers = get_dhan_headers()
+    watchlist = pd.read_csv('watchlist.csv')
+
+    # Load prev_close cache (saved daily at 3:35 PM)
+    try:
+        with open('prev_close_cache.json', 'r') as f:
+            cache = json.load(f)
+        prev_closes = cache.get('data', {})
+    except Exception:
+        prev_closes = {}
+
+    if not prev_closes:
+        log.warning('No prev_close_cache.json found')
+        return []
+
+    gainers = []
+    top_stocks = watchlist.head(100)
+
+    for _, row in top_stocks.iterrows():
+        sid = str(row['security_id'])
+        tk = row['ticker']
+        prev = prev_closes.get(sid, 0)
+        if not prev or prev <= 0:
+            continue
+
+        # Get today's LTP via intraday API (last candle close)
+        try:
+            from datetime import date
+            today_str = date.today().strftime('%Y-%m-%d')
+            payload = {
+                'securityId': sid,
+                'exchangeSegment': 'NSE_EQ',
+                'instrument': 'EQUITY',
+                'interval': '15',
+                'fromDate': today_str,
+                'toDate': today_str
+            }
+            resp = requests.post(f'{DHAN_BASE}/charts/intraday',
+                               headers=headers, json=payload, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                closes = data.get('close', [])
+                opens = data.get('open', [])
+                highs = data.get('high', [])
+                lows = data.get('low', [])
+                vols = data.get('volume', [])
+                if closes:
+                    ltp = closes[-1]
+                    day_open = float(opens[0]) if opens else 0
+                    day_high = float(max(highs)) if highs else 0
+                    day_low = float(min(lows)) if lows else 0
+                    day_vol = float(sum(vols)) if vols else 0
+                    intraday_pct = ((ltp - day_open) / day_open * 100) if day_open else 0
+                    value_cr = (ltp * day_vol) / 1e7
+                    gain = ((ltp - prev) / prev) * 100
+                    if gain > 0.5:
+                        gainers.append({'sid': sid, 'ticker': tk, 'ltp': ltp,
+                                       'prev_close': prev, 'gain_pct': gain,
+                                       'open': day_open, 'high': day_high, 'low': day_low,
+                                       'volume': day_vol, 'intraday_pct': round(intraday_pct, 2),
+                                       'value_cr': round(value_cr, 2)})
+            time.sleep(0.5)
+        except Exception:
+            continue
+
+    gainers.sort(key=lambda x: x['gain_pct'], reverse=True)
+    return gainers[:10]
+
+
+import re
+def read_todays_bot_log():
+    today_str = date.today().strftime('%Y-%m-%d')
+    shortlisted, rejected, traded = [], [], None
+    regime = "Unknown"; nifty_val = "?"; nifty_chg = "?"; side_selects = []
+    try:
+        with open('bot.log', 'r') as f:
+            for line in f:
+                if today_str not in line:
+                    continue
+                if 'SHORTLISTED' in line or 'PASSED' in line:
+                    shortlisted.append(line.strip())
+                elif 'REJECTED' in line or 'FAILED' in line:
+                    rejected.append(line.strip())
+                elif 'ENTRY' in line or 'BUY' in line:
+                    traded = line.strip()
+                elif 'Regime CONFIRMED' in line or 'Regime PROVISIONAL' in line:
+                    # Extract: "Regime CONFIRMED @09:28: NORMAL"
+                    m = re.search(r'Regime (?:CONFIRMED|PROVISIONAL) @\d+:\d+: ([A-Z_]+)', line)
+                    if m: regime = m.group(1)
+                elif 'Market: Nifty=' in line:
+                    m = re.search(r'Nifty=(\d+)', line)
+                    if m: nifty_val = m.group(1)
+                elif 'SIDE SELECT' in line:
+                    side_selects.append(line.strip())
+    except FileNotFoundError:
+        pass
+    # Load dual-scorer CSV for score data
+    scores_data = []
+    try:
+        import csv as _csv, os as _os
+        csv_p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                              "candle_archive", f"candidate_scores_{date.today()}.csv")
+        if _os.path.exists(csv_p):
+            with open(csv_p) as _cf:
+                scores_data = list(_csv.DictReader(_cf))
+    except Exception:
+        pass
+    # Load MCX shadow results if available
+    mcx_summary = {}
+    try:
+        import json as _j, os as _os
+        sp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "mcx_shadow_state.json")
+        if _os.path.exists(sp):
+            d = _j.load(open(sp))
+            if d.get("date") == date.today().isoformat():
+                mcx_summary = d
+    except Exception:
+        pass
+    return {'shortlisted': shortlisted[:20], 'rejected': rejected[:20], 'traded': traded,
+            'regime': regime, 'nifty': nifty_val, 'side_selects': side_selects[:5],
+            'scores_data': scores_data, 'mcx_summary': mcx_summary}
+
+
+def call_gemini(prompt):
+    import time as _time
+    api_key = get_parameter('/trading-engine/ai/gemini-api-key')
+    if not api_key:
+        return 'Gemini API key not available.'
+    url = GEMINI_URL.format(model=GEMINI_MODEL) + f'?key={api_key}'
+    payload = {'contents': [{'parts': [{'text': prompt}]}],
+               'generationConfig': {'maxOutputTokens': 3000},
+               'systemInstruction': {'parts': [{'text': 'You are an expert NSE intraday trader. Answer DIRECTLY in the EXACT format requested. NEVER show thinking steps, reasoning chains, or internal monologue. Output ONLY the final structured answer with specific numbers.'}]}}
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                wait = 5 * (2 ** attempt)
+                log.info(f'Gemini retry {attempt+1}/{max_retries}, waiting {wait}s...')
+                _time.sleep(wait)
+            resp = requests.post(url, json=payload, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get('candidates',[{}])[0].get('content',{}).get('parts',[{}])[0].get('text','')
+            elif resp.status_code == 429:
+                log.warning(f'Gemini rate limited (429), attempt {attempt+1}')
+                if attempt == max_retries - 1:
+                    return 'Gemini quota exceeded. Will retry tomorrow. No AI analysis available today.'
+                continue
+            else:
+                return f'Gemini error: {resp.status_code} - {resp.text[:200]}'
+        except Exception as e:
+            if attempt == max_retries - 1:
+                return f'Gemini unavailable: {str(e)}'
+    return 'Gemini failed after retries.'
+def call_groq(prompt):
+    import requests
+    api_key = get_parameter('/trading-engine/ai/groq-api-key')
+    if not api_key:
+        return 'Groq API key not available.'
+    try:
+        resp = requests.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json={'model': 'openai/gpt-oss-120b', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 4000, 'temperature': 0.3},
+            timeout=60
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return next(iter(data['choices']))['message']['content']
+        else:
+            return f'Groq error: {resp.status_code} - {resp.text[:200]}'
+    except Exception as e:
+        return f'Groq unavailable: {str(e)}'
+
+
+
+def build_data_driven_prompt(top_gainers, bot_log):
+    today = date.today().strftime("%A, %B %d, %Y")
+    gainers_text = ""
+    for i, g in enumerate(top_gainers[:10]):
+        _sym = g.get('ticker', g.get('symbol', '?'))
+        _ltp = g.get('ltp', 0)
+        _chg = g.get('gain_pct', g.get('pChange', 0))
+        _open = g.get('open', 0)
+        _vol  = g.get('volume', 0)
+        _val  = g.get('value_cr', 0)
+        _gap  = round((_ltp - _open) / _open * 100, 2) if _open else 0
+        # TRUE MISS classification
+        _cls = "UNKNOWN"
+        if _open > 0:
+            if _gap > 8.0: _cls = "NOT-OUR-SETUP (gap {:.1f}% > 8% cap)".format(_gap)
+            elif _gap < 0.3: _cls = "NOT-OUR-SETUP (gap {:.1f}% < 0.3% min)".format(_gap)
+            elif _ltp < 60: _cls = "NOT-OUR-SETUP (price Rs.{:.0f} < Rs.60 floor)".format(_ltp)
+            else: _cls = "EVALUATE"
+        gainers_text += (f"  {i+1}. {_sym}: open={_open:.1f} LTP={_ltp} "
+                        f"intraday={_gap:+.1f}% day_chg={_chg:+.1f}% "
+                        f"vol={_vol:,.0f} val=Rs.{_val:.1f}Cr → {_cls}") + NL
+    # --- wired 2026-07-21: source shortlist/rejected from pending_{date}.json (real logged candidates) ---
+    import os as _pos, json as _pjson
+    from datetime import date as _pdate
+    _pf = _pos.path.join(_pos.path.dirname(_pos.path.abspath(__file__)), "candle_archive", f"pending_{_pdate.today()}.json")
+    _kept, _rej = [], []
+    try:
+        with open(_pf) as _pff:
+            _pd = _pjson.load(_pff)
+        for _c in _pd.get("candidates", []):
+            _line = ("%s: gap +%.1f%%, RS %.1f, score %.1f, %s, LTP %s" % (
+                _c.get('symbol', '?'), (_c.get('gap') or 0), (_c.get('rs') or 0),
+                (_c.get('score') or 0), _c.get('tier', '?'), _c.get('ltp') or 0))
+            (_kept if _c.get("kept") else _rej).append(_line)
+    except Exception:
+        _kept, _rej = [], []
+    shortlist_text = NL.join(_kept[:10]) if _kept else NL.join(bot_log.get("shortlisted", ["No data"])[:10])
+    rejected_text = NL.join(_rej[:10]) if _rej else NL.join(bot_log.get("rejected", ["No data"])[:10])
+    traded_text = str(bot_log.get("traded", "No trade today"))
+    regime = bot_log.get("regime", "Unknown")
+    nifty  = bot_log.get("nifty", "?")
+    scores_data = bot_log.get("scores_data", [])
+    mcx_summary = bot_log.get("mcx_summary", {})
+
+    # Build scored candidates section from dual_scorer CSV
+    scored_text = ""
+    if scores_data:
+        scored_text = "\nDUAL-SCORER RESULTS (long_score/180 | short_score/180):\n"
+        for row in scores_data[:10]:
+            ticker = row.get("ticker","?")
+            ls = float(row.get("long_score",0))
+            ss = float(row.get("short_score",0))
+            gap = row.get("gap_pct","?")
+            in_sl = row.get("in_shortlist","N")
+            scored_text += (f"  {ticker}: gap={gap}% | long={ls:.0f}/180 | "
+                           f"short={ss:.0f}/180 | shortlisted={in_sl}\n")
+        scored_text += f"  Gate today: 59/180 (33%) — fixed 2026-07-28\n"
+
+    # MCX shadow section
+    mcx_text = ""
+    if mcx_summary:
+        positions = mcx_summary.get("positions", [])
+        spnl = mcx_summary.get("session_pnl", 0)
+        mcx_text = (f"\nMCX SHADOW SESSION (18:30-23:00 IST):\n"
+                   f"  Trades: {len(positions)} | Session P&L: Rs.{spnl:+,.0f}\n")
+        for p in positions[:3]:
+            mcx_text += (f"  {p.get('side','?')} {p.get('name','?')} "
+                        f"entry={p.get('entry','?')} exit={p.get('exit_price','open')} "
+                        f"reason={p.get('exit_reason','open')}\n")
+    else:
+        mcx_text = "\nMCX SHADOW: First session ran tonight — results tomorrow.\n"
+    shadow_text = str(bot_log.get("shadow", "No shadow data"))
+
+    prompt = f"""You are an expert NSE intraday trader analyzing today ({today}).
+
+=== MARKET DATA ===
+MARKET CONTEXT:
+  NIFTY: {nifty} | Regime: {regime}
+{scored_text}{mcx_text}
+Market Regime: {regime}
+
+=== TOP 10 NSE GAINERS TODAY ===
+{gainers_text}
+
+=== BOT SHORTLISTED (Passed all filters) ===
+{shortlist_text}
+
+=== BOT REJECTED (Failed filters) ===
+{rejected_text}
+
+=== TRADE TAKEN ===
+{traded_text}
+
+=== SHADOW TRADER PICKS ===
+{shadow_text}
+
+OUR ACTUAL SELECTION CRITERIA (do NOT guess thresholds - judge every gainer against THESE):
+  1. Opening gap: +0.3% to +8% (below 0.3% = flat-open reject; above 8% = too-extended reject)
+  2. RVOL: >= 2.0x (relative volume vs the stock's own average)
+  3. Price band: Rs.60 to Rs.5000
+  4. Liquidity (ADT, avg daily turnover): min Rs.5Cr, sweet spot Rs.50-70Cr
+  5. Universe: must be in our 552-stock sector-classified watchlist (gainers OUTSIDE it are never scanned)
+  6. Relative Strength: ranked vs NIFTY (higher RS = higher rank)
+  7. Regime gate (5-state): NO_TRADE / BEARISH-DEFENSIVE / CHOPPY(pause+shadow) / NORMAL(x1.25) / TRENDING(x1.50)
+ENTRY: ORB breakout - a 5-min candle CLOSES above opening-range high + buffer; size = regime multiplier.
+EXIT: SMART_EXIT_v2 + R-Skate v2 trail; hard SL -5%; dead-trade cut (<0.5R in 30min); mandatory 3:15PM square-off.
+COST: MIS round-trip ~Rs.24 min; a trade must clear a 3x cost gate. A NO-TRADE on a weak/flat tape is a CORRECT outcome, not a miss.
+
+Answer these 5 questions with SPECIFIC stock names and numbers. Judge ONLY against the criteria above - never invent a threshold:
+
+Q1. MISSED OPPORTUNITIES: For EACH top gainer, classify as (a) TRUE MISS - passed ALL 7 criteria, we should have caught it; or (b) NOT-OUR-SETUP - name the ONE criterion it failed + its value vs the threshold (e.g. "gap +11.3% > 8% cap", or "not in 552 watchlist -> never scanned"). If a field is missing, say which field is needed - do NOT guess vaguely.
+
+Q2. SELECTION ACCURACY: Compare OUR shortlisted stocks (listed above) vs the actual top gainers. Which shortlisted names gained, which failed to move? Which gainers were absent from our shortlist and why? If the shortlist is EMPTY, state whether NO-TRADE was the CORRECT call given the regime.
+
+Q3. ENTRY/EXIT TIMING: For any TRUE MISS or trade taken, at what ORB-break level would we enter, what was high-of-day after entry, how much of the move did we capture vs leave, and was Smart Exit too early or correct?
+
+Q4. REGIME ASSESSMENT: State the detected regime and whether today's gainer breadth (how many names, which sectors) CONFIRMS or CONTRADICTS it. Should we have traded more or fewer given the criteria?
+
+Q5. TOMORROW ACTIONABLE: ONE specific, testable threshold change (one criterion, one exact number) that would capture the most TRUE MISSES - WITH its trade-off (what noise/losers it also admits). Only if the cost economics justify it. No multi-change wishlists.
+
+RESPOND IN EXACTLY THIS FORMAT — no preamble, no internal reasoning:
+Q1 → table: TICKER | GAP | CLASSIFICATION | REASON FAILED
+Q2 → 3 bullet lines: Shortlisted+moved / Shortlisted+flat / Absent+why
+Q3 → ORB levels or N/A
+Q4 → one sentence regime verdict
+Q5 → ONE change: criterion / old-value → new-value / trade-off / cost check
+"""
+
+    return prompt
+
+
+
+def get_shadow_summary():
+    """Read today shadow trade log and format summary"""
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+    shadow_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shadow_logs")
+    shadow_file = os.path.join(shadow_dir, f"shadow_{today_str}.json")
+    if not os.path.exists(shadow_file):
+        return "Shadow trader did not run today (no data available)"
+    try:
+        import json
+        with open(shadow_file) as sf:
+            data = json.load(sf)
+        main_picks = data.get("main_bot", {})
+        shadow_picks = data.get("shadow_trader", {})
+        main_count = len(main_picks.get("shortlisted", []))
+        shadow_count = len(shadow_picks.get("shortlisted", []))
+        main_pnl = main_picks.get("pnl", 0)
+        shadow_pnl = shadow_picks.get("pnl", 0)
+        result = f"Main Bot: {main_count} shortlisted, PnL: Rs.{main_pnl:.0f}<br>"
+        result += f"Shadow (Expert): {shadow_count} shortlisted, PnL: Rs.{shadow_pnl:.0f}<br>"
+        winner = "Main Bot" if main_pnl >= shadow_pnl else "Shadow (Expert)"
+        result += f"<b>Winner: {winner}</b>"
+        return result
+    except Exception as e:
+        return f"Shadow data error: {e}"
+
+def _fmt_ai(text):
+    import re as _re
+    lines = text.split("\n"); out = []; in_tbl = False
+    for ln in lines:
+        if "|" in ln and ln.strip().startswith("|"):
+            if not in_tbl:
+                out.append('<table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;font-size:12px;">')
+                in_tbl = True
+            if _re.match(r"^\|\s*[-:]+", ln): continue
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            out.append("<tr>" + "".join(f"<td style='padding:4px'>{c}</td>" for c in cells) + "</tr>")
+        else:
+            if in_tbl: out.append("</table>"); in_tbl = False
+            ln2 = _re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", ln)
+            out.append(f"<span>{ln2}</span><br>")
+    if in_tbl: out.append("</table>")
+    return "".join(out)
+
+
+def _fmt_ai(text):
+    import re as _re
+    lines = text.split("\n"); out = []; in_tbl = False
+    for ln in lines:
+        if "|" in ln and ln.strip().startswith("|"):
+            if not in_tbl:
+                out.append('<table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;font-size:12px;">')
+                in_tbl = True
+            if _re.match(r"^\|\s*[-:]+", ln): continue
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            out.append("<tr>" + "".join(f"<td style='padding:4px'>{c}</td>" for c in cells) + "</tr>")
+        else:
+            if in_tbl: out.append("</table>"); in_tbl = False
+            ln2 = _re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", ln)
+            out.append(f"<span>{ln2}</span><br>")
+    if in_tbl: out.append("</table>")
+    return "".join(out)
+
+
+def send_email(analysis, top_gainers):
+    import re as _re, csv as _csv, os as _os
+    ses = boto3.client('ses', region_name='ap-south-1')
+    sender = get_parameter('/trading-engine/ses/sender-email')
+    recipient = get_parameter('/trading-engine/ses/recipient-email')
+    today = date.today().strftime('%d %b %Y')
+
+    _regime = "UNKNOWN"; _nifty = "?"; _bnf = "?"
+    try:
+        with open('bot.log','r') as _f:
+            for _l in _f:
+                if date.today().isoformat() not in _l: continue
+                if 'Regime' in _l and ('CONFIRMED' in _l or 'CHANGED' in _l or 'PROVISIONAL' in _l):
+                    m = _re.search(r'(?:CONFIRMED|CHANGED|PROVISIONAL)[^:]*:\s*([A-Z_]+)', _l)
+                    if m: _regime = m.group(1)  # keeps updating so last one wins
+                if 'Nifty=' in _l:
+                    m = _re.search(r'Nifty=(\d+)', _l)
+                    if m: _nifty = m.group(1)
+                if 'BankNifty=' in _l:
+                    m = _re.search(r'BankNifty=(\d+)', _l)
+                    if m: _bnf = m.group(1)
+    except Exception: pass
+
+    RC = {'NORMAL':'#27ae60','FULL':'#27ae60','TRENDING_UP':'#2ecc71',
+          'TRENDING_DOWN':'#e74c3c','CONSERVATIVE':'#f39c12','CHOPPY':'#e74c3c'}
+    rc = RC.get(_regime, '#95a5a6')
+
+    gr = ""
+    for g in top_gainers[:5]:
+        sym = g.get('ticker', g.get('symbol','?'))
+        # Classify here since _classification may not be pre-set
+        if not g.get('_classification'):
+            opn2 = g.get('open',0); ltp2 = g.get('ltp',0)
+            gap2 = round((ltp2-opn2)/opn2*100,1) if opn2 else 0
+            if gap2 > 8.0: g['_classification'] = f'NOT-OUR-SETUP (gap {gap2:+.1f}% > 8% cap)'
+            elif ltp2 < 60: g['_classification'] = f'NOT-OUR-SETUP (price < Rs.60)'
+            else: g['_classification'] = 'MISSED (RVOL/watchlist — check logs)'
+        ltp = g.get('ltp',0); chg = g.get('gain_pct', g.get('pChange',0))
+        opn = g.get('open',0); vol = g.get('volume',0); val = g.get('value_cr',0)
+        gap = round((ltp-opn)/opn*100,1) if opn else 0
+        cls = g.get('_classification','MISSED')
+        cc = '#e74c3c' if 'NOT-OUR' in cls else '#f39c12'
+        gr += (f'<tr><td><b>{sym}</b></td><td>Rs.{ltp:,.1f}</td>'
+               f'<td style="color:#27ae60">+{chg:.1f}%</td>'
+               f'<td>Rs.{opn:,.1f}</td><td style="color:#3498db">{gap:+.1f}%</td>'
+               f'<td>{vol/1e5:.1f}L</td><td>Rs.{val:.0f}Cr</td>'
+               f'<td style="color:{cc};font-size:11px">{cls}</td></tr>')
+
+    sr = ""
+    try:
+        cf = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           "candle_archive", f"candidate_scores_{date.today()}.csv")
+        if _os.path.exists(cf):
+            with open(cf) as ff:
+                _seen = {}  # deduplicate by ticker
+                for r in _csv.DictReader(ff):
+                    if r.get('in_shortlist') != 'Y': continue
+                    _t = r.get('ticker','?')
+                    ls = float(r.get('long_score',0))
+                    if _t not in _seen or ls > float(_seen[_t].get('long_score',0)):
+                        _seen[_t] = r
+                for r in _seen.values():
+                    ls = float(r.get('long_score',0))
+                    st = "GATE BLOCKED" if ls < 54 else ("NO BREAKOUT" if ls >= 54 else "CHECK")
+                    sr += (f'<tr><td><b>{r["ticker"]}</b></td>'
+                           f'<td>{float(r.get("gap_pct",0)):+.2f}%</td>'
+                           f'<td>{float(r.get("rs",0)):.1f}</td>'
+                           f'<td>{ls:.0f}/180</td><td>{st}</td></tr>')
+    except Exception: pass
+
+    TH = 'style="background:#2980b9;color:white;padding:7px"'
+    html = (
+        f'<html><body style="font-family:Arial,sans-serif;max-width:860px;margin:0 auto;">'
+        f'<h2 style="border-bottom:3px solid #2980b9;padding-bottom:8px">Post-Market AI Analysis - {today}</h2>'
+        f'<div style="background:#ecf0f1;border-left:5px solid {rc};padding:12px;margin-bottom:16px;border-radius:4px">'
+        f'<b>Market Status</b><br>'
+        f'NIFTY: <b>{_nifty}</b> | BankNifty: <b>{_bnf}</b> | Regime: <b style="color:{rc}">{_regime}</b>'
+        f'</div>'
+        f'<h3>Top 5 NSE Gainers</h3>'
+        f'<table border="1" cellpadding="7" style="border-collapse:collapse;width:100%;font-size:13px">'
+        f'<tr><th {TH}>Stock</th><th {TH}>LTP</th><th {TH}>Day%</th>'
+        f'<th {TH}>Open</th><th {TH}>Intraday%</th><th {TH}>Vol</th><th {TH}>Value</th><th {TH}>Status</th></tr>'
+        f'{gr}</table>'
+        f'<h3>Our Shortlist</h3>'
+        + (f'<table border="1" cellpadding="7" style="border-collapse:collapse;width:100%;font-size:13px">'
+           f'<tr><th {TH}>Ticker</th><th {TH}>Gap%</th><th {TH}>RS</th><th {TH}>Score</th><th {TH}>Status</th></tr>'
+           f'{sr}</table>' if sr else '<p><i>No shortlist data today</i></p>') +
+        f'<h3>AI Analysis (Groq/Gemini)</h3>'
+        f'<div style="background:#f8f9fa;padding:15px;border-radius:8px;font-size:13px;line-height:1.6">'
+        f'{_fmt_ai(analysis)}</div>'
+        f'<hr><h3>Shadow Trader</h3>'
+        f'<div style="background:#fff3cd;padding:12px;border-radius:8px;font-size:13px">'
+        f'{get_shadow_summary()}</div>'
+        f'<hr><p style="color:#95a5a6;font-size:11px">Trading Bot v6.1 | Gate: 54/180 (30%)</p>'
+        f'</body></html>')
+
+    ses.send_email(Source=sender, Destination={'ToAddresses': [recipient]},
+                   Message={'Subject': {'Data': f'Post-Market Analysis - {today} | {_regime}'},
+                            'Body': {'Html': {'Data': html}}})
+    log.info('Email sent')
+
+
+def run_post_market_analysis():
+    log.info('=== Post-Market Gemini Analysis ===')
+    top_gainers = get_nse_top_gainers() or get_top_gainers_from_dhan()
+    try:
+        try:
+            from trading_bot import DhanClient
+            from secrets_manager import get_dhan_token
+            _dc = DhanClient()
+            top_gainers = enrich_gainers(top_gainers, _dc)
+        except Exception as _e:
+            log.warning(f'gainer enrichment skipped: {_e}')
+    except Exception as _e:
+        log.warning(f'gainer enrichment skipped: {_e}')
+    log.info(f'Top gainers: {len(top_gainers)}')
+    for g in top_gainers[:3]:
+        log.info(f'  {g["ticker"]}: +{g["gain_pct"]:.1f}%')
+    bot_log = read_todays_bot_log()
+    prompt = build_data_driven_prompt(top_gainers, bot_log)
+    # Gemini first, Groq fallback — 1 attempt each, no retry
+    analysis = call_gemini(prompt)
+    if not analysis or 'error' in analysis.lower() or '404' in analysis or 'quota' in analysis.lower() or 'failed' in analysis.lower():
+        log.info('Gemini unavailable, using Groq...')
+        analysis = call_groq(prompt)
+    log.info(f'Gemini response: {len(analysis)} chars')
+    send_email(analysis, top_gainers)
+    log.info('=== Analysis Complete ===')
+
+
+if __name__ == '__main__':
+    run_post_market_analysis()

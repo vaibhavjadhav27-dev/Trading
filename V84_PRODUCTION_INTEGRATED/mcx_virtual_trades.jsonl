@@ -1,0 +1,2 @@
+{"ts": "2026-09-02T21:01:31.355879+05:30", "event": "VIRTUAL_ENTRY", "symbol": "CRUDEOIL", "side": "SELL", "price": 8000, "qty": 100, "sl": 8100, "reason": "ORB", "score": 75.0}
+{"ts": "2026-09-02T21:01:31.356175+05:30", "event": "VIRTUAL_EXIT", "symbol": "CRUDEOIL", "side": "SELL", "price": 7950.0, "qty": 100, "pnl": 5000.0, "r": 0.5, "reason": "SL_HIT", "entry": 8000, "peak": 7900, "mfe": 1.0}

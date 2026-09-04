@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""V8.2 FINAL integrated NSE intraday orchestrator.
+
+Canonical path:
+market quote/5m data -> NIFTY/sector context -> 15m direction-neutral scan
+-> candidate score -> live setup confirmation -> final 100 score ->
+Dhan margin tier -> Dhan order -> fill/position verification -> hard SL ->
+profit/peak manager -> verified exit -> journal/state.
+
+Legacy trading_bot.py remains available for supporting infrastructure (AWS,
+sector snapshot, email, AI/swing/MCX helpers), but it is NOT used as the live
+order decision engine.
+"""
+from __future__ import annotations
+import os,time,json,logging,subprocess,sys
+from pathlib import Path
+from datetime import datetime
+import pandas as pd
+
+from trading_bot import TradingBot, now_ist, ist_time
+from v82_dhan_gateway import DhanV82Gateway
+from v82_strategy import candidate_score, final_decision, momentum, rvol
+from trade_policy import margin_tier
+import trade_journal, config
+
+log=logging.getLogger("V82_FINAL")
+STATE_FILE=Path("v82_active_positions.json")
+EVENT_FILE=Path("logs/v82_events.jsonl")
+
+
+def _event(kind, payload):
+    EVENT_FILE.parent.mkdir(parents=True,exist_ok=True)
+    rec={"ts_ist":now_ist().isoformat(),"event":kind,**payload}
+    with EVENT_FILE.open("a") as fh: fh.write(json.dumps(rec,default=str)+"\n")
+
+
+class TradingBotV82(TradingBot):
+    def __init__(self,dry_run=False):
+        super().__init__()
+        self.dry_run=dry_run
+        self.dhan=DhanV82Gateway(self.client_id,self.token,dry_run=dry_run)
+        self.active_positions={}
+        self._last_scan_slot=None
+        self._last_snapshot_slot=None
+        self._feature_cache={}
+        self.entry_cutoff=getattr(config,"ENTRY_CUTOFF","14:45")
+        self.rescan_minutes=15
+        self.snapshot_minutes=30
+        log.info("V8.2 FINAL canonical live path enabled; legacy ORB order path is bypassed")
+
+    def fetch_ltp_concurrent(self, security_ids):
+        INDEX_SIDS={"13","25"}
+        ids=[str(x) for x in security_ids]; out={}
+        eq_ids=[s for s in ids if s not in INDEX_SIDS]
+        if eq_ids and len(eq_ids)>3:
+            try:
+                import time as _t; _t.sleep(1.1)
+                int_ids=[int(s) for s in eq_ids]
+                d=self.dhan._request("POST","/marketfeed/ltp",{"NSE_EQ":int_ids},kind="quote")
+                if isinstance(d,dict):
+                    node=d.get("data",d).get("NSE_EQ",{})
+                    for sid,v in node.items():
+                        if isinstance(v,dict):
+                            out[str(sid)]=float(v.get("last_price",v.get("lastPrice",0)) or 0)
+                if len(out)>=len(eq_ids)*0.5:
+                    log.info(f"MARKETFEED LTP: {len(out)}/{len(eq_ids)} (0.5s)")
+                else:
+                    raise RuntimeError(f"marketfeed low: {len(out)}")
+            except Exception as e1:
+                try:
+                    from ws_ltp_scanner import get_bulk_ltp
+                    pairs=[(s,int(s)) for s in eq_ids]
+                    ws=get_bulk_ltp(self.client_id,self.token,pairs,timeout=15)
+                    if isinstance(ws,dict) and len(ws)>=len(eq_ids)*0.5:
+                        out.update(ws)
+                        log.info(f"WS LTP: {len(ws)}/{len(eq_ids)} (fallback 1)")
+                    else:
+                        raise RuntimeError(f"WS low: {len(ws or {})}")
+                except Exception as e2:
+                    log.warning(f"Fast methods failed ({e1}; {e2}), REST fallback")
+                    import time as _t
+                    for sid in eq_ids:
+                        try:
+                            d=self.dhan.get_ohlc_intraday(sid,"NSE_EQ","1")
+                            if isinstance(d,dict) and d.get("close"):
+                                out[sid]=float(d["close"][-1])
+                            _t.sleep(0.10)
+                        except: pass
+        elif eq_ids:
+            import time as _t
+            for sid in eq_ids:
+                try:
+                    d=self.dhan.get_ohlc_intraday(sid,"NSE_EQ","1")
+                    if isinstance(d,dict) and d.get("close"):
+                        out[sid]=float(d["close"][-1])
+                    _t.sleep(0.10)
+                except: pass
+        for sid in [s for s in ids if s in INDEX_SIDS]:
+            try:
+                d=self.dhan.get_ohlc_intraday(sid,"IDX_I","1")
+                if isinstance(d,dict) and d.get("close"):
+                    out[sid]=float(d["close"][-1])
+            except: pass
+        return out
+
+    def _load_prev(self):
+        try:
+            raw=json.loads(Path("prev_close_cache.json").read_text()).get("data",{})
+            return {str(k):float(v.get("close",v.get("prev_close",v)) if isinstance(v,dict) else v) for k,v in raw.items()}
+        except Exception:return {}
+
+    def _df(self,sid):
+        d=self.dhan.get_ohlc_intraday(str(sid),"NSE_EQ","5")
+        if not d:return None
+        d=d.get("data",d) if isinstance(d,dict) else d
+        if isinstance(d,dict) and "close" in d:
+            cols={k:[float(x) for x in d[k]] for k in ("open","high","low","close","volume") if k in d}
+            return pd.DataFrame(cols) if "volume" in cols else None
+        if isinstance(d,list):
+            df=pd.DataFrame(d)
+            for c in ("open","high","low","close","volume"):
+                if c in df.columns:df[c]=pd.to_numeric(df[c],errors="coerce")
+            return df.dropna(subset=["close","high","low","volume"]) if all(c in df for c in ("close","high","low","volume")) else None
+        return None
+
+    def snapshot_market(self):
+        try:
+            self.maybe_record_market_snapshot(force=True)
+            self._last_snapshot_slot=now_ist().strftime("%Y%m%d%H%M")
+        except Exception as e: log.warning("30m market snapshot failed: %s",e)
+
+    def _sector_info(self,ticker):
+        try:
+            import sector_rotation
+            if not sector_rotation.SECTOR_MAP: sector_rotation.load_sector_map("watchlist.csv")
+            sec=str(sector_rotation.SECTOR_MAP.get(ticker,"")).upper()
+        except Exception:sec=""
+        leads={str(x[0]).upper() for x in getattr(self,"_leading_sectors",[])}
+        lags={str(x[0]).upper() for x in getattr(self,"_lagging_sectors",[])}
+        return sec,sec in leads,sec in lags
+
+    def select_candidates(self):
+        """Direction-neutral universe ranking; no gap/ORB/EMA hard rejection."""
+        prev=self._load_prev(); stocks=self.watchlist
+        ids=[str(s["security_id"]) for s in stocks]
+        # SMART OHLC: WebSocket LTP for pre-ranking, then candles only for top movers
+        _ws_ltp = self.fetch_ltp_concurrent(ids)
+        _prev = self._load_prev()
+        # Pre-rank by approximate movement (LTP vs prev_close = gap proxy)
+        _pre_ranked = []
+        for st in stocks:
+            sid = str(st["security_id"])
+            px = float(_ws_ltp.get(sid, 0) or 0)
+            pc = float(_prev.get(sid, 0) or 0)
+            if px <= 0:
+                continue
+            approx_gap = abs((px - pc) / pc * 100) if pc > 0 else 0
+            _pre_ranked.append((approx_gap, st, px, pc))
+        _pre_ranked.sort(key=lambda x: x[0], reverse=True)
+        # Fetch full OHLC candles only for top 50 movers (saves ~70% of API calls)
+        _top_sids = [str(x[1]["security_id"]) for x in _pre_ranked[:50]]
+        ohlc = {}
+        import time as _t
+        for _sid in _top_sids:
+            try:
+                d = self.dhan.get_ohlc_intraday(_sid, "NSE_EQ", "5")
+                if isinstance(d, dict) and d.get("close"):
+                    closes = d["close"]; opens = d["open"]; highs = d["high"]; lows = d["low"]
+                    if closes:
+                        ohlc[_sid] = {"ltp": float(closes[-1]), "open": float(opens[0]) if opens else 0,
+                                     "close": float(closes[-1]),
+                                     "high": float(max(float(x) for x in highs)) if highs else 0,
+                                     "low": float(min(float(x) for x in lows)) if lows else 0}
+                _t.sleep(0.10)
+            except Exception:
+                pass
+        # For remaining stocks, use WS LTP as approximate OHLC (ltp=open=close=high=low)
+        for approx_gap, st, px, pc in _pre_ranked[50:]:
+            sid = str(st["security_id"])
+            if sid not in ohlc and px > 0:
+                ohlc[sid] = {"ltp": px, "open": pc if pc > 0 else px, "close": px, "high": px, "low": px}
+        log.info(f"SMART OHLC: {len(_top_sids)} candle-fetched + {len(ohlc)-len([s for s in _top_sids if s in ohlc])} WS-approx = {len(ohlc)} total")
+        nifty=float(self.nifty_data.get("ltp",0) or 0); np=float(self.nifty_data.get("prev_close",0) or 0)
+        ng=((nifty-np)/np*100) if np else 0.0
+        ranked=[]
+        for st in stocks:
+            sid=str(st["security_id"]); q=ohlc.get(sid,{})
+            px=float(q.get("ltp",0) or 0); op=float(q.get("open",0) or 0); pc=float(prev.get(sid,0) or 0)
+            if px<=0 or px<getattr(config,"PRICE_FLOOR",0) or px>getattr(config,"PRICE_CEIL_TIER1",999999):continue
+            day_ret=((px-op)/op*100) if op else 0.0
+            gap=((op-pc)/pc*100) if pc else 0.0
+            day_range=((q.get("high",px)-q.get("low",px))/px*100) if px else 0
+            # Broad rank is driven by current intraday movement/range, not opening gap.
+            broad=max(abs(day_ret),abs(gap)*0.35,day_range*0.50)
+            ranked.append((broad,st,px,op,pc,day_ret,gap))
+        ranked.sort(key=lambda x:x[0],reverse=True)
+        universe=ranked[:180]
+        rows=[]
+        for _,st,px,op,pc,day_ret,gap in universe:
+            sid=str(st["security_id"])
+            try:
+                safe,_=__import__("fno_ban_check").is_stock_safe(st.get("ticker",""))
+                if not safe:continue
+            except Exception:pass
+            df=self._df(sid)
+            if df is None or len(df)<5:continue
+            r5,r15,r30,acc=momentum(df); rv=rvol(df,st.get("avg_daily_volume",st.get("adv_20d",0)) or 0)
+            sec,lead,lag=self._sector_info(st.get("ticker",""))
+            rs=day_ret-ng
+            feat={"symbol":st.get("ticker","?"),"ticker":st.get("ticker","?"),"security_id":sid,"ltp":px,"open":op,"gap_pct":gap,"day_return_pct":day_ret,"nifty_gap":ng,"rs":rs,"rvol":rv,"df":df,"momentum_5m":r5,"momentum_15m":r15,"momentum_30m":r30,"accel":acc,"sector":sec,"sector_leading":lead,"sector_against":lag,"sector_rs":0.0,"regime":getattr(self,"regime","NORMAL"),"allow_sudden_move":True}
+            L,S,_=candidate_score(feat); feat.update(candidate_long=L,candidate_short=S,candidate_score=max(L,S))
+            self._feature_cache[sid]=feat
+            if max(L,S)>=50:rows.append(feat)
+        rows.sort(key=lambda x:max(x["candidate_long"],x["candidate_short"]),reverse=True)
+        self.candidates=rows; _event("candidate_scan",{"count":len(rows),"universe":len(universe),"regime":getattr(self,"regime","NORMAL")})
+        log.info("V8.2 candidates >=50: %d/%d",len(rows),len(universe))
+        return rows
+
+    def _build_entry_features(self,c):
+        f=dict(c)
+        if c.get("candidate_long",0)==c.get("candidate_short",0):return None
+        f["side"]="LONG" if c.get("candidate_long",0)>c.get("candidate_short",0) else "SHORT"
+        live=self.fetch_ltp_concurrent([c["security_id"]]).get(str(c["security_id"]),c["ltp"])
+        f["ltp"]=float(live or c["ltp"])
+        f["df"]=self._df(c["security_id"])
+        if f["df"] is None:return None
+        f["rvol"]=rvol(f["df"],c.get("avg_daily_volume",c.get("adv_20d",0)) or 0)
+        f["momentum_5m"],f["momentum_15m"],f["momentum_30m"],f["accel"]=momentum(f["df"])
+        return f
+
+    def _margin_quantity(self,c,score,side,price):
+        balance=self.dhan.get_balance(); multiple,_=margin_tier(score)
+        if multiple<=0:return 0,multiple,0,balance
+        desired=balance*multiple
+        qty=max(1,int(desired/max(price,.01)))
+        txn="BUY" if side=="LONG" else "SELL"
+        m=self.dhan.calculate_margin(c["security_id"],qty,txn,price) or {}
+        avail=float(m.get("availableBalance",m.get("availabelBalance",balance)) or balance); req=float(m.get("totalMargin",0) or 0)
+        # Quantity scaling uses actual broker margin; then re-check.
+        if req>avail and req>0:
+            qty=max(1,int(qty*avail/req*.98)); m=self.dhan.calculate_margin(c["security_id"],qty,txn,price) or m
+            avail=float(m.get("availableBalance",avail) or avail); req=float(m.get("totalMargin",req) or req)
+        return (qty if req<=avail and qty>0 else 0),multiple,req,avail
+
+    def _hard_stop(self,side,fill_price,df):
+        try:
+            c=[float(x) for x in df["close"]]; atr=sum(abs(c[i]-c[i-1]) for i in range(1,len(c)))/max(1,len(c)-1); atrp=atr/fill_price*100
+        except Exception:atrp=.60
+        sl_pct=max(.30,min(1.20,atrp*1.5))
+        return round(fill_price*(1-sl_pct/100) if side=="LONG" else fill_price*(1+sl_pct/100),2)
+
+    def execute_entry(self,c,d):
+        sid=str(c["security_id"]); side=d["side"]; price=float(d["entry_price"]); score=float(d["final_score"])
+        if sid in self.active_positions:return False,"already_active"
+        qty,multiple,margin_req,available=self._margin_quantity(c,score,side,price)
+        if qty<1:return False,"margin_insufficient"
+        txn="BUY" if side=="LONG" else "SELL"
+        resp=self.dhan.place_order(sid,qty,0,txn,"MARKET"); oid=(resp or {}).get("orderId") if isinstance(resp,dict) else None
+        if not oid:return False,"dhan_order_not_accepted"
+        fill=self.dhan.verify_fill(oid)
+        if fill["status"]=="PARTIAL":
+            try:self.dhan.cancel_order(oid)
+            except Exception:pass
+        if fill["status"] not in ("FILLED","PARTIAL") or fill["qty"]<=0:return False,f"entry_{fill['status']}"
+        fq=int(fill["qty"]); fp=float(fill["price"] or price)
+        nq=self.dhan.verify_position(sid,side)
+        if (side=="LONG" and nq<=0) or (side=="SHORT" and nq>=0):
+            self.emergency_exit(sid,fq,side); return False,"broker_position_mismatch"
+        trigger=round(fp*(1+0.75/100),2) if side=="SHORT" else round(fp*(1-0.75/100),2)  # 0.75% fixed SL from fill (crash-proof)
+        sl=self.dhan.place_hard_sl(sid,fq,side,trigger); sl_oid=(sl or {}).get("orderId") if isinstance(sl,dict) else None
+        if not sl_oid:
+            self.emergency_exit(sid,fq,side); return False,"hard_sl_not_accepted"
+        sl_status=(self.dhan.get_order_status(sl_oid) or {}).get("orderStatus","").upper()
+        if sl_status not in ("PENDING","TRANSIT","TRADED","PART_TRADED"):
+            self.emergency_exit(sid,fq,side); return False,f"hard_sl_{sl_status or 'UNKNOWN'}"
+        self.active_positions[sid]={"symbol":c.get("symbol","?"),"security_id":sid,"side":side,"qty":fq,"entry":fp,"sl":trigger,"sl_order_id":sl_oid,"peak":fp,"score":score,"tier":multiple,"entry_time":now_ist().isoformat(),"target":d["target"],"max_profit_pct":0.0}
+        self._save_state(); _event("entry",self.active_positions[sid])
+        try:trade_journal.log_trade({"symbol":c.get("symbol"),"side":side,"entry":fp,"qty":fq,"score":score,"tier":multiple,"entry_time":now_ist().isoformat()})
+        except Exception:pass
+        log.info("ENTRY %s %s qty=%s price=%.2f score=%.1f tier=%.1fx margin=%.2f",side,c.get("symbol"),fq,fp,score,multiple,margin_req)
+        return True,"ENTRY_OK"
+
+    def emergency_exit(self,sid,qty,side):
+        try:
+            txn="SELL" if side=="LONG" else "BUY"; r=self.dhan.place_order(str(sid),qty,0,txn,"MARKET"); oid=(r or {}).get("orderId")
+            if not oid:return False
+            f=self.dhan.verify_fill(oid); return f["status"] in ("FILLED","PARTIAL")
+        except Exception:return False
+
+    def close_position(self,sid,reason,px=None):
+        sid=str(sid); p=self.active_positions.get(sid)
+        if not p:return False
+        try:self.dhan.cancel_order(p.get("sl_order_id"))
+        except Exception:pass
+        txn="SELL" if p["side"]=="LONG" else "BUY"
+        r=self.dhan.place_order(sid,p["qty"],0,txn,"MARKET"); oid=(r or {}).get("orderId") if isinstance(r,dict) else None
+        if not oid:return False
+        f=self.dhan.verify_fill(oid)
+        nq=self.dhan.verify_position(sid,p["side"])
+        if nq!=0:
+            # One bounded retry; never silently mark a position closed.
+            rem=abs(nq); r2=self.dhan.place_order(sid,rem,0,txn,"MARKET"); oid2=(r2 or {}).get("orderId")
+            if oid2:self.dhan.verify_fill(oid2)
+            nq=self.dhan.verify_position(sid,p["side"])
+        if nq!=0:return False
+        exit_px=float(px or f.get("price") or p["entry"]); pnl=((exit_px-p["entry"])/p["entry"]*100) if p["side"]=="LONG" else ((p["entry"]-exit_px)/p["entry"]*100)
+        rec={"symbol":p["symbol"],"side":p["side"],"qty":p["qty"],"entry":p["entry"],"exit":exit_px,"pnl_pct":pnl,"reason":reason,"exit_time":now_ist().isoformat()}
+        _event("exit",rec)
+        try:trade_journal.log_exit(rec)
+        except Exception:pass
+        del self.active_positions[sid]; self._save_state(); log.info("EXIT %s %s pnl=%.3f%% reason=%s",p["side"],p["symbol"],pnl,reason); return True
+
+    def monitor_positions(self):
+        if not self.active_positions:return
+        prices=self.fetch_ltp_concurrent(list(self.active_positions.keys()))
+        for sid,p in list(self.active_positions.items()):
+            px=float(prices.get(sid,0) or 0)
+            if px<=0:continue
+            side=p["side"]; entry=p["entry"]
+            pnl=((px-entry)/entry*100) if side=="LONG" else ((entry-px)/entry*100)
+            p["max_profit_pct"]=max(p.get("max_profit_pct",0),pnl)
+            if side=="LONG":p["peak"]=max(p.get("peak",entry),px); retrace=(p["peak"]-px)/p["peak"]*100
+            else:p["peak"]=min(p.get("peak",entry),px); retrace=(px-p["peak"])/p["peak"]*100
+            # +0.40 is protection trigger, not take-profit. Keep chasing while momentum is intact.
+            reason=None
+            if p["max_profit_pct"]>=.40:
+                protected=max(.35,p["max_profit_pct"]-.30)
+                if pnl<=protected:reason="PROFIT_TRAIL"
+                elif retrace>=.40:reason="PEAK_REVERSAL"
+            if reason:self.close_position(sid,reason,px)
+        self._save_state()
+
+    def _save_state(self):
+        STATE_FILE.write_text(json.dumps(self.active_positions,indent=2,default=str))
+
+    def _load_state(self):
+        try:self.active_positions=json.loads(STATE_FILE.read_text())
+        except Exception:self.active_positions={}
+
+    def reconcile_broker(self):
+        if self.dry_run:return True
+        self._load_state(); positions=self.dhan.get_positions() or []; positions=positions.get("data",[]) if isinstance(positions,dict) else positions
+        broker={str(p.get("securityId")):int(float(p.get("netQty",0) or 0)) for p in positions if int(float(p.get("netQty",0) or 0))!=0}
+        local={str(k):int(v.get("qty",0))*(1 if v.get("side")=="LONG" else -1) for k,v in self.active_positions.items()}
+        if broker!=local:
+            raise RuntimeError(f"BROKER/LOCAL POSITION MISMATCH; broker={broker} local={local}. Refusing new trades.")
+        return True
+
+    def _run_supporting_modules(self):
+        """Keep existing AI/swing/MCX/post-market orchestration separate from live order path."""
+        if os.getenv("V82_RUN_POSTMARKET_HOOKS","1")!="1":return
+        for script in ("market_intel.py","post_market_analysis.py","swing_daily.py","mcx_shadow_trader.py","pull_yf_history.py"):
+            if not Path(script).exists():continue
+            try:
+                subprocess.run([sys.executable,script],timeout=180,check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                _event("support_module",{"script":script,"status":"ran"})
+            except Exception as e:_event("support_module",{"script":script,"status":"error","error":str(e)})
+
+    def run(self):
+        enforce=os.getenv("V82_ENFORCE_STATIC_IP","1")=="1"
+        ok,msg=self.dhan.preflight(enforce_static_ip=enforce)
+        if not ok and not self.dry_run:raise RuntimeError("V8.2 PREFLIGHT FAILED: "+msg)
+        log.info("V8.2 PREFLIGHT: %s",msg); _event("preflight",{"ok":ok,"message":msg,"dry_run":self.dry_run})
+        self.reconcile_broker()
+        while now_ist()<ist_time(9,30):time.sleep(5)
+        self.check_market_quality(); self.snapshot_market(); self.select_candidates()
+        next_scan=time.monotonic(); next_snapshot=time.monotonic()
+        while now_ist()<ist_time(15,9):
+            if time.monotonic()>=next_snapshot:self.snapshot_market(); next_snapshot=time.monotonic()+self.snapshot_minutes*60
+            self.monitor_positions()
+            now=now_ist(); hh,mm=map(int,self.entry_cutoff.split(":"))
+            if now<ist_time(hh,mm) and time.monotonic()>=next_scan:
+                self.check_market_quality(); self.select_candidates()
+                # No daily trade cap and no one-trade-per-scan cap. Every qualifying candidate is evaluated.
+                for c in list(self.candidates):
+                    if str(c["security_id"]) in self.active_positions:continue
+                    f=self._build_entry_features(c)
+                    if not f:continue
+                    d=final_decision(f)
+                    _event("entry_evaluation",{"symbol":c.get("symbol"),"side":d["side"],"candidate_score":d["candidate_score"],"final_score":d["final_score"],"setup":d["setup_type"],"status":d["status"],"reason":d["reason"]})
+                    if d["status"]=="ENTER":
+                        ok,reason=self.execute_entry(c,d)
+                        if not ok:log.warning("Broker rejected %s: %s",c.get("symbol"),reason)
+                next_scan=time.monotonic()+self.rescan_minutes*60
+            time.sleep(2)
+        for sid in list(self.active_positions):
+            p=self.active_positions[sid]; px=self.fetch_ltp_concurrent([sid]).get(sid,p["entry"]); self.close_position(sid,"MANDATORY_EOD",px)
+        self._run_supporting_modules(); log.info("V8.2 EOD complete")
+
+
+if __name__=="__main__":
+    TradingBotV82(dry_run=os.getenv("V82_DRY_RUN","0")=="1").run()

@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""
+shadow_orchestrator.py — V8.5.1 MCX + Swing Shadow Orchestration
+Wires the new strategy modules into existing data infrastructure.
+Usage:
+  python3 shadow_orchestrator.py --mcx     (run during MCX session 19:00-23:00)
+  python3 shadow_orchestrator.py --swing   (run after market close ~19:00)
+  python3 shadow_orchestrator.py --report  (daily comparison report)
+"""
+import sys, json, os, time, logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, "/home/ubuntu/trading-bot")
+sys.path.insert(0, "/home/ubuntu/trading-bot/V84_PRODUCTION_INTEGRATED")
+
+IST = timezone(timedelta(hours=5, minutes=30))
+SHADOW_DIR = Path("/home/ubuntu/trading-bot/V84_PRODUCTION_INTEGRATED/shadow_comparison")
+SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("/home/ubuntu/trading-bot/logs/shadow_orchestrator.log")])
+log = logging.getLogger("shadow_orch")
+
+def now_ist(): return datetime.now(IST)
+def today_str(): return now_ist().strftime("%Y-%m-%d")
+
+def get_balance():
+    from secrets_manager import get_dhan_token, get_dhan_client_id
+    import requests
+    token = get_dhan_token(); cid = get_dhan_client_id()
+    headers = {"access-token": token, "client-id": cid, "Content-Type": "application/json"}
+    try:
+        r = requests.get("https://api.dhan.co/v2/fundlimit", headers=headers, timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            return float(d.get("availabelBalance", d.get("data",{}).get("availabelBalance",0)) or 0)
+    except Exception as e:
+        log.warning(f"Balance fetch: {e}")
+    return 0.0
+
+def load_or_create_snapshot():
+    path = SHADOW_DIR / f"snapshot_{today_str()}.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    from shadow_comparator import new_day_snapshot, create_ledgers
+    balance = get_balance()
+    if balance <= 0:
+        log.error("Cannot get Dhan balance for snapshot")
+        return None
+    snapshot = new_day_snapshot(balance)
+    path.write_text(json.dumps(snapshot, indent=2))
+    log.info(f"Day snapshot: Rs.{balance:,.2f} → 3 virtual ledgers")
+    return snapshot
+
+def load_ledgers():
+    path = SHADOW_DIR / f"ledgers_{today_str()}.json"
+    if path.exists():
+        data = json.loads(path.read_text())
+        from shadow_comparator import ShadowLedger
+        ledgers = {}
+        for k, v in data.items():
+            ledgers[k] = ShadowLedger(**v)
+        return ledgers
+    snapshot = load_or_create_snapshot()
+    if not snapshot: return None
+    from shadow_comparator import create_ledgers
+    ledgers = create_ledgers(snapshot)
+    save_ledgers(ledgers)
+    return ledgers
+
+def save_ledgers(ledgers):
+    from dataclasses import asdict
+    path = SHADOW_DIR / f"ledgers_{today_str()}.json"
+    data = {k: asdict(v) for k, v in ledgers.items()}
+    path.write_text(json.dumps(data, indent=2))
+
+# ═══════════════════════════════════════════════════
+# MCX SESSION
+# ═══════════════════════════════════════════════════
+def run_mcx_shadow():
+    """MCX V8.5.4 Shadow - batch LTP, native ORB."""
+    log.info("=" * 50)
+    log.info("MCX V8.5.4 SHADOW SESSION")
+    log.info("=" * 50)
+
+    import os, time, json, boto3, requests as _req
+    from datetime import datetime as _dt, date as _date
+
+    ssm = boto3.client('ssm', region_name='ap-south-1')
+    token = ssm.get_parameter(Name='/trading-engine/dhan/access-token', WithDecryption=True)['Parameter']['Value'].strip()
+    client_id = ssm.get_parameter(Name='/trading-engine/dhan/client-id', WithDecryption=True)['Parameter']['Value'].strip()
+    os.environ['DHAN_ACCESS_TOKEN'] = token
+    os.environ['DHAN_CLIENT_ID'] = client_id
+
+    from mcx_v854_engine import NativeMCXData, completed_orb
+
+    session = _req.Session()
+    headers = {'Content-Type': 'application/json', 'access-token': token, 'client-id': client_id}
+    data_provider = NativeMCXData(session, headers)
+
+    ledgers = load_ledgers()
+    mcx_cap = ledgers["MCX_SHADOW"].starting_capital if ledgers and ledgers.get("MCX_SHADOW") else 87125.0
+    log.info(f"MCX virtual capital: Rs.{mcx_cap:,.2f}")
+
+    prefixes = {
+        "CRUDEOIL": "CRUDEOIL", "GOLD": "GOLD", "GOLDPETAL": "GOLDPETAL",
+        "SILVER": "SILVER", "SILVERM": "SILVERM",
+        "NATURALGAS": "NATURALGAS", "NATGASMINI": "NATGASMINI",
+    }
+    contracts = data_provider.resolve_contracts(prefixes, _date.today())
+    if not contracts:
+        log.error("No MCX contracts resolved")
+        return
+    log.info(f"Resolved {len(contracts)} contracts: {list(contracts.keys())}")
+    for k, c in contracts.items():
+        log.info(f"  {k}: {c.symbol} SID={c.security_id} lot={c.lot_size}")
+
+    all_sids = [c.security_id for c in contracts.values()]
+
+    # Record ORB
+    log.info("Recording MCX native 15-min ORB (waiting until 18:45)...")
+    orbs = {}
+    for key, contract in contracts.items():
+        try:
+            candle_data = data_provider.intraday(contract.security_id)
+            orb = completed_orb(candle_data)
+            if orb:
+                orbs[key] = {"high": orb[0], "low": orb[1], "sid": contract.security_id}
+                log.info(f"  {key}: ORB H={orb[0]:.2f} L={orb[1]:.2f}")
+            else:
+                log.warning(f"  {key}: ORB incomplete")
+        except Exception as e:
+            log.warning(f"  {key}: ORB failed: {e}")
+
+    # Monitor loop
+    log.info("Monitoring for V8.5.4 MCX signals...")
+    session_end_utc = _dt.utcnow().replace(hour=18, minute=0, second=0)
+    signals = []
+    cycle = 0
+
+    while _dt.utcnow() < session_end_utc:
+        cycle += 1
+        try:
+            prices = data_provider.marketfeed_ltp(all_sids)
+            if not prices:
+                time.sleep(5)
+                continue
+
+            # Log every 5 minutes
+            if cycle % 60 == 1:
+                parts = []
+                for k in contracts:
+                    sid = contracts[k].security_id
+                    if sid in prices:
+                        parts.append(f"{k}={prices[sid]:.2f}")
+                log.info(f"LTP [{cycle}]: {' | '.join(parts)}")
+
+            # Check ORB breakouts
+            for key, contract in contracts.items():
+                px = prices.get(contract.security_id, 0)
+                if px <= 0:
+                    continue
+                orb = orbs.get(key)
+                if not orb:
+                    continue
+                h = orb["high"]
+                l = orb["low"]
+
+                if px > h * 1.001:
+                    if not any(s["contract"] == key and s["side"] == "BUY" for s in signals):
+                        log.info(f"SIGNAL: BUY {key} @ {px:.2f} (ORB HIGH breakout, H={h:.2f})")
+                        signals.append({"time": _dt.utcnow().isoformat(), "contract": key, "side": "BUY", "price": px})
+                elif px < l * 0.999:
+                    if not any(s["contract"] == key and s["side"] == "SELL" for s in signals):
+                        log.info(f"SIGNAL: SELL {key} @ {px:.2f} (ORB LOW breakout, L={l:.2f})")
+                        signals.append({"time": _dt.utcnow().isoformat(), "contract": key, "side": "SELL", "price": px})
+
+        except RuntimeError as e:
+            if "429" in str(e):
+                log.warning("Rate limited - backing off 30s")
+                time.sleep(30)
+            else:
+                log.error(f"LTP error: {e}")
+                time.sleep(10)
+        except Exception as e:
+            log.error(f"Cycle error: {e}")
+            time.sleep(10)
+
+        time.sleep(5)
+
+    # Session summary
+    log.info("=" * 50)
+    log.info(f"MCX SESSION COMPLETE | Signals: {len(signals)}")
+    for s in signals:
+        log.info(f"  {s['side']} {s['contract']} @ {s['price']:.2f}")
+    log.info("=" * 50)
+
+    if signals:
+        sig_path = f"/home/ubuntu/trading-bot/V84_PRODUCTION_INTEGRATED/mcx_signals_{_date.today().isoformat()}.json"
+        with open(sig_path, 'w') as f:
+            json.dump(signals, f, indent=2)
+        log.info(f"Signals saved: {sig_path}")
+
+
+def run_swing_shadow():
+    log.info("=" * 50)
+    log.info("SWING V8.5.1 SHADOW SESSION")
+    log.info("=" * 50)
+    ledgers = load_ledgers()
+    if not ledgers: return
+    swing_ledger = ledgers.get("SWING_SHADOW")
+    if not swing_ledger:
+        log.error("No Swing ledger"); return
+
+    from swing_v851_strategy import evaluate_swing, size_swing, swing_exit_v851
+    import csv
+
+    log.info(f"Swing virtual capital: Rs.{swing_ledger.starting_capital:,.2f}")
+
+    # Load watchlist for stock data
+    watchlist_path = "/home/ubuntu/trading-bot/V84_PRODUCTION_INTEGRATED/watchlist.csv"
+    stocks = []
+    with open(watchlist_path) as f:
+        for row in csv.reader(f):
+            if len(row) >= 2:
+                stocks.append({"ticker": row[0], "sid": row[1], "sector": row[2] if len(row) > 2 else ""})
+
+    # Build features from available data (prev_close cache + metrics)
+    metrics_path = "/home/ubuntu/trading-bot/V84_PRODUCTION_INTEGRATED/stock_metrics.json"
+    metrics = {}
+    if os.path.exists(metrics_path):
+        metrics = json.loads(open(metrics_path).read())
+
+    signals_log = []
+    shadow_risk = 0.0
+
+    for st in stocks[:100]:  # Top 100 for now
+        ticker = st["ticker"]
+        m = metrics.get(ticker, {})
+        price = float(m.get("last_price", m.get("close", 0)) or 0)
+        if price <= 0: continue
+
+        features = {
+            "ticker": ticker, "price": price,
+            "sma20": float(m.get("sma20", price * 0.98) or price * 0.98),
+            "sma50": float(m.get("sma50", price * 0.95) or price * 0.95),
+            "sma200": float(m.get("sma200", price * 0.90) or price * 0.90),
+            "atr": float(m.get("atr", price * 0.02) or price * 0.02),
+            "rs10": float(m.get("rs_5d", 0) or 0),
+            "rs20": float(m.get("rs_20d", 0) or 0),
+            "rvol": float(m.get("rvol", 1.0) or 1.0),
+            "sector_rs": float(m.get("sector_rs", 0) or 0),
+            "market_rs": 0.0,
+            "high20": float(m.get("high_20d", price * 1.05) or price * 1.05),
+            "low20": float(m.get("low_20d", price * 0.95) or price * 0.95),
+            "base_tightness": 0.5,
+            "accumulation": float(m.get("clv", 0.5) or 0.5),
+            "breakout": False, "retest": False,
+            "close_strength": 0.6, "catalyst": 0.0,
+        }
+
+        signal = evaluate_swing(features)
+        if signal:
+            sizing = size_swing(signal, swing_ledger.starting_capital, shadow_risk)
+            log.info(f"SWING SIGNAL: {signal.side} {ticker} score={signal.score:.1f} expected={signal.expected_move_pct:.1f}% qty={sizing.get('qty',0)}")
+            signals_log.append({
+                "ticker": ticker, "side": signal.side,
+                "score": signal.score, "price": price,
+                "expected_move_pct": signal.expected_move_pct,
+                "setup": signal.setup, "qty": sizing.get("qty", 0),
+                "action": "SHADOW_ENTRY" if sizing.get("qty", 0) > 0 else "REJECTED_SIZE"
+            })
+            if sizing.get("qty", 0) > 0:
+                shadow_risk += abs(price - signal.stop) * sizing["qty"]
+
+    # Save swing results
+    result_path = SHADOW_DIR / f"swing_{today_str()}.json"
+    result_path.write_text(json.dumps({"date": today_str(),
+        "signals": signals_log, "total_signals": len(signals_log),
+        "qualified": sum(1 for s in signals_log if s.get("qty", 0) > 0)}, indent=2, default=str))
+    log.info(f"Swing session: {len(signals_log)} signals, {sum(1 for s in signals_log if s.get('qty',0)>0)} qualified")
+    save_ledgers(ledgers)
+
+# ═══════════════════════════════════════════════════
+# DAILY REPORT
+# ═══════════════════════════════════════════════════
+def run_report():
+    log.info("Generating daily shadow comparison report...")
+    ledgers = load_ledgers()
+    if not ledgers: return
+    from shadow_comparator import daily_report
+    report = daily_report(ledgers)
+    report_path = SHADOW_DIR / f"comparison_{today_str()}.json"
+    report_path.write_text(json.dumps(report, indent=2))
+    log.info(f"Comparison report: {report_path}")
+    for r in report:
+        log.info(f"  {r['engine']}: return={r['return_pct']:+.3f}% trades={r['trades']} fees={r['fees']:.2f}")
+
+if __name__ == "__main__":
+    if "--mcx" in sys.argv:
+        run_mcx_shadow()
+    elif "--swing" in sys.argv:
+        run_swing_shadow()
+    elif "--report" in sys.argv:
+        run_report()
+    else:
+        print("Usage: shadow_orchestrator.py --mcx|--swing|--report")

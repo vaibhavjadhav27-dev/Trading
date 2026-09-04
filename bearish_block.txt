@@ -1,0 +1,53 @@
+            # === LIVE BEARISH-DAY SECTOR ROTATION (v6.8, corrected) ===
+            regime = getattr(self, "market_regime", getattr(self, "regime", "NORMAL"))
+            if regime == "BEARISH" and getattr(config, "BEARISH_LIVE_ENABLED", False):
+                try:
+                    from sector_rotation import (find_leading_sectors,
+                                                 is_sector_eligible,
+                                                 load_sector_map, SECTOR_INDICES)
+                    import json as _json
+                    load_sector_map("watchlist.csv")
+                    sector_prev = {}
+                    try:
+                        with open("sector_prev_close.json", "r") as _f:
+                            sector_prev = _json.load(_f)
+                    except Exception:
+                        pass
+                    sector_ltps = {}
+                    for _name, _sid in SECTOR_INDICES.items():
+                        if str(_sid).startswith("REPLACE"):
+                            continue
+                        try:
+                            _lt = self.get_live_price(str(_sid))
+                            if _lt and _lt > 0:
+                                sector_ltps[_name] = _lt
+                        except Exception:
+                            continue
+                    nifty_ret = self.nifty_data.get("gap", 0) if hasattr(self, "nifty_data") else 0
+                    log.info(f"BEARISH day. sector_ltps={len(sector_ltps)} prev={len(sector_prev)}")
+                    if not sector_prev or not sector_ltps:
+                        log.info("Missing sector data -> NO bearish trade (capital safe)")
+                        self.candidates = []
+                    else:
+                        leading = find_leading_sectors(sector_ltps, sector_prev, nifty_ret)
+                        log.info(f"  Leading sectors: {leading or []}")
+                        if not leading:
+                            log.info("  No genuinely bullish sector -> NO TRADE")
+                            self.candidates = []
+                        else:
+                            kept = []
+                            for c in self.candidates:
+                                ok, reason = is_sector_eligible(
+                                    c.get("ticker", ""), leading, c.get("gap_pct", 0),
+                                    sector_ltps, sector_prev)
+                                log.info(f"    {c.get('ticker')}: {reason}")
+                                if ok:
+                                    c["_bearish_rotation"] = True
+                                    c["_size_mult"] = getattr(config, "BEARISH_SIZE_MULT", 0.5)
+                                    kept.append(c)
+                            max_bear = getattr(config, "BEARISH_MAX_CANDIDATES", 3)
+                            self.candidates = kept[:max_bear]
+                            log.info(f"  Bearish candidates: {[c.get('ticker') for c in self.candidates]}")
+                except Exception as e:
+                    log.warning(f"Bearish rotation error -> skipping bearish trades: {e}")
+                    self.candidates = []

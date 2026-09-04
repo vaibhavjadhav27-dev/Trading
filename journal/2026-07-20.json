@@ -1,0 +1,22 @@
+{
+  "trade": {
+    "exit": {
+      "position_id": "CURRENT",
+      "expected_entry": "1751.3",
+      "symbol": "ADANIENSOL",
+      "tier": "CURATED",
+      "trailing_sl": "1663.43",
+      "score": "1.5833",
+      "entry_price": "1751.3",
+      "max_price": "1755.4",
+      "security_id": "10217",
+      "r_value": "87.87",
+      "entry_slippage": "0.0",
+      "phase": "INITIAL",
+      "qty": "10",
+      "sl": "1663.43",
+      "entry_time": "2026-07-17T10:29:31.924368",
+      "order_id": "321260717241403"
+    }
+  }
+}

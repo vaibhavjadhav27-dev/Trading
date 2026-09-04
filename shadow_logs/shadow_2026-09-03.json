@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-03",
+  "market_context": {
+    "bias": "UNKNOWN",
+    "reason": "API error"
+  },
+  "decisions": [
+    {
+      "ticker": "INFY",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "TCS",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "WIPRO",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "HCLTECH",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "SBIN",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "ICICIBANK",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "AXISBANK",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "KOTAKBANK",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "M&M",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "ADANIENT",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "ADANIPORTS",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "RELIANCE",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "TATAPOWER",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "SUNPHARMA",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "DRREDDY",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "TATASTEEL",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "HINDALCO",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "JSWSTEEL",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "BEL",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    },
+    {
+      "ticker": "APOLLOTYRE",
+      "action": "SKIP",
+      "reason": "API error (historical)"
+    }
+  ],
+  "candidates_count": 0,
+  "best_pick": null,
+  "trade_result": {
+    "status": "NO_TRADE",
+    "reason": "UNKNOWN"
+  }
+}

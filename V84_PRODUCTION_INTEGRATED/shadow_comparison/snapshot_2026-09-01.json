@@ -1,0 +1,10 @@
+{
+  "date": "2026-09-01",
+  "starting_capital": 93871.53,
+  "source": "Dhan available balance snapshot",
+  "engines": [
+    "NSE_INTRADAY",
+    "MCX_SHADOW",
+    "SWING_SHADOW"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "trade": {
+    "symbol": "LODHA",
+    "security_id": "3220",
+    "entry_price": "1200.25",
+    "qty": "13",
+    "sl": "1139.38",
+    "r_value": "60.87",
+    "max_price": "1200.25",
+    "trailing_sl": "1139.38",
+    "phase": "INITIAL",
+    "score": "1.8182",
+    "tier": "CURATED",
+    "entry_time": "2026-07-27T10:32:47.997365",
+    "order_id": "32126072773903",
+    "expected_entry": "1200.25",
+    "entry_slippage": "0.0"
+  }
+}

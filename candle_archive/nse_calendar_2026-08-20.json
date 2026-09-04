@@ -1,0 +1,115 @@
+{
+  "date": "2026-08-20",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "J&KBANK",
+      "company": "The Jammu & Kashmir Bank Limited",
+      "desc": "Resignation of Director/KMP/SMP",
+      "an_dt": "20-Aug-2026 18:59:04",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "ELGIEQUIP",
+      "company": "Elgi Equipments Limited",
+      "desc": "Acquisition",
+      "an_dt": "20-Aug-2026 18:58:08",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "J&KBANK",
+      "company": "The Jammu & Kashmir Bank Limited",
+      "desc": "Resignation",
+      "an_dt": "20-Aug-2026 18:57:52",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "RALLIS",
+      "company": "Rallis India Limited",
+      "desc": "Change in Management",
+      "an_dt": "20-Aug-2026 18:57:14",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "LGEINDIA",
+      "company": "LG Electronics India Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "20-Aug-2026 18:56:20",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "HOMEFIRST",
+      "company": "Home First Finance Company India Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "20-Aug-2026 18:55:57",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TEAMLEASE",
+      "company": "Teamlease Services Limited",
+      "desc": "General Updates",
+      "an_dt": "20-Aug-2026 18:52:13",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "360ONE",
+      "company": "360 ONE WAM LIMITED",
+      "desc": "ESOP/ESOS/ESPS",
+      "an_dt": "20-Aug-2026 18:51:48",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "SHALPAINTS",
+      "company": "Shalimar Paints Limited",
+      "desc": "Copy of Newspaper Publication",
+      "an_dt": "20-Aug-2026 18:46:31",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "RALLIS",
+      "company": "Rallis India Limited",
+      "desc": "Outcome of Board Meeting",
+      "an_dt": "20-Aug-2026 18:45:32",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "FEDERALBNK",
+      "company": "The Federal Bank  Limited",
+      "purpose": "Fund Raising",
+      "date": "21-Aug-2026"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "company": "ICICI Bank Limited",
+      "purpose": "Fund Raising",
+      "date": "21-Aug-2026"
+    },
+    {
+      "symbol": "SIGACHI",
+      "company": "Sigachi Industries Limited",
+      "purpose": "Fund Raising",
+      "date": "22-Aug-2026"
+    },
+    {
+      "symbol": "GABRIEL",
+      "company": "Gabriel India Limited",
+      "purpose": "Fund Raising",
+      "date": "24-Aug-2026"
+    },
+    {
+      "symbol": "UCOBANK",
+      "company": "UCO Bank",
+      "purpose": "Fund Raising",
+      "date": "24-Aug-2026"
+    },
+    {
+      "symbol": "TEAMLEASE",
+      "company": "Teamlease Services Limited",
+      "purpose": "Other business matters",
+      "date": "25-Aug-2026"
+    }
+  ]
+}

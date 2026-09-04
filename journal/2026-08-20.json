@@ -1,0 +1,14 @@
+{
+  "trade": {
+    "exit": {
+      "symbol": "16713",
+      "side": "SHORT",
+      "qty": 34,
+      "entry": 1339.9,
+      "exit": 1339.0,
+      "pnl_pct": 0.06716919173073296,
+      "reason": "MANDATORY_EOD",
+      "exit_time": "2026-08-20T15:05:01.164294"
+    }
+  }
+}

@@ -1,0 +1,255 @@
+{
+  "date": "2026-08-13",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "MAITHANALL",
+      "company": "Maithan Alloys Limited",
+      "desc": "Record Date",
+      "an_dt": "13-Aug-2026 18:58:48",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "FISCHER",
+      "company": "Fischer Medical Ventures Limited",
+      "desc": "General Updates",
+      "an_dt": "13-Aug-2026 18:57:38",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "HALDER",
+      "company": "Halder Venture Limited",
+      "desc": "Updates",
+      "an_dt": "13-Aug-2026 18:56:12",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TEAMLEASE",
+      "company": "Teamlease Services Limited",
+      "desc": "General Updates",
+      "an_dt": "13-Aug-2026 18:56:04",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "BRIGADE",
+      "company": "Brigade Enterprises Limited",
+      "desc": "Investor Presentation",
+      "an_dt": "13-Aug-2026 18:55:08",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "SBIN",
+      "company": "State Bank of India",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "13-Aug-2026 18:54:47",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "ASHOKLEY",
+      "company": "Ashok Leyland Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "AVG",
+      "company": "AVG Logistics Limited",
+      "purpose": "Financial Results/Dividend",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "BANG",
+      "company": "Bang Overseas Limited",
+      "purpose": "Financial Results/Other business matters",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "BANKINDIA",
+      "company": "Bank of India",
+      "purpose": "Fund Raising",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "BDL",
+      "company": "Bharat Dynamics Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "COCHINSHIP",
+      "company": "Cochin Shipyard Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "EASEMYTRIP",
+      "company": "Easy Trip Planners Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "FISCHER",
+      "company": "Fischer Medical Ventures Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "JAIBALAJI",
+      "company": "Jai Balaji Industries Limited",
+      "purpose": "Financial Results/Other business matters",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "LUXIND",
+      "company": "Lux Industries Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "MAXESTATES",
+      "company": "Max Estates Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "MCLOUD",
+      "company": "Magellanic Cloud Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "NARMADA",
+      "company": "Narmada Agrobase Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "NATCOPHARM",
+      "company": "Natco Pharma Limited",
+      "purpose": "Financial Results/Dividend",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "NATCOPHARM",
+      "company": "Natco Pharma Limited",
+      "purpose": "Fund Raising",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "NMDC",
+      "company": "NMDC Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "PATANJALI",
+      "company": "Patanjali Foods Limited",
+      "purpose": "Financial Results/Dividend",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "PURVA",
+      "company": "Puravankara Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "RAMASTEEL",
+      "company": "Rama Steel Tubes Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "REPL",
+      "company": "Rudrabhishek Enterprises Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "RKEC",
+      "company": "RKEC Projects Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "RUBICON",
+      "company": "Rubicon Research Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "SCHNEIDER",
+      "company": "Schneider Electric Infrastructure Limited",
+      "purpose": "Financial Results/Other business matters",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "SHIVALIK",
+      "company": "Shivalik Rasayan Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "SUPREMEINF",
+      "company": "Supreme Infrastructure India Limited",
+      "purpose": "Financial Results/Other business matters",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "TCIFINANCE",
+      "company": "TCI Finance Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "TDPOWERSYS",
+      "company": "TD Power Systems Limited",
+      "purpose": "Fund Raising",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "TIINDIA",
+      "company": "Tube Investments of India Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "UFLEX",
+      "company": "UFLEX Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "VOLTAS",
+      "company": "Voltas Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "VOLTAS",
+      "company": "Voltas Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "ZEEMEDIA",
+      "company": "Zee Media Corporation Limited",
+      "purpose": "Financial Results",
+      "date": "14-Aug-2026"
+    },
+    {
+      "symbol": "BALKRISIND",
+      "company": "Balkrishna Industries Limited",
+      "purpose": "Fund Raising",
+      "date": "18-Aug-2026"
+    },
+    {
+      "symbol": "BPCL",
+      "company": "Bharat Petroleum Corporation Limited",
+      "purpose": "Fund Raising",
+      "date": "18-Aug-2026"
+    }
+  ]
+}

@@ -1,0 +1,814 @@
+"""
+Execution Integrity Module — V8.6.0
+====================================
+Expert-mandated Phase 1: Make broker truth the ultimate truth.
+
+Architecture principle:
+    NEVER infer position state from internal logic.
+    ALWAYS verify against broker before concluding.
+
+Components:
+    1. OrderStateTracker — state machine for every order
+    2. BrokerReconciler — discover and adopt orphan positions
+    3. TradeLedger — permanent trade lifecycle (TRADE_ID)
+    4. ExecutionGuard — kill-switch + entry gating
+
+Integration:
+    from execution_integrity import ExecutionIntegrity
+    ei = ExecutionIntegrity(dhan_gateway, bot_instance)
+    
+    # Before entry:
+    if not ei.guard.entries_allowed():
+        return False, "KILL_SWITCH_ACTIVE"
+    
+    # After placing order:
+    ei.track_order(order_id, symbol, side, qty, price)
+    
+    # Instead of verify_fill timeout → return False:
+    result = ei.resolve_order(order_id, symbol, sid, side, qty, price)
+    # result.status in (FILLED, ADOPTED, CANCELLED, REJECTED)
+    
+    # Every cycle:
+    ei.reconcile()
+    
+    # After SL placement:
+    ei.confirm_sl(order_id, sid, side, trigger_price)
+"""
+
+from __future__ import annotations
+import json, time, logging, uuid, os
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Optional, Dict, List, Any
+
+log = logging.getLogger("execution_integrity")
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 1. ORDER STATE MACHINE
+# ─────────────────────────────────────────────────────────────────────
+
+
+
+class OrderState(Enum):
+    SUBMITTED = "SUBMITTED"
+    PENDING = "PENDING"
+    PARTIAL = "PARTIAL"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass
+class OrderRecord:
+    order_id: str
+    trade_id: str
+    symbol: str
+    security_id: str
+    side: str  # LONG / SHORT
+    txn: str   # BUY / SELL
+    requested_qty: int
+    price: float
+    state: OrderState = OrderState.SUBMITTED
+    filled_qty: int = 0
+    avg_fill_price: float = 0.0
+    sl_order_id: Optional[str] = None
+    sl_confirmed: bool = False
+    sl_trigger: float = 0.0
+    created_at: str = ""
+    resolved_at: str = ""
+    resolution_method: str = ""  # normal, race_adoption, orphan_adoption
+    broker_verified: bool = False
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(IST).isoformat()
+
+
+class OrderStateTracker:
+    """Tracks every order from submission to final resolution."""
+
+    def __init__(self, dhan, ledger_path: Path):
+        self.dhan = dhan
+        self.orders: Dict[str, OrderRecord] = {}
+        self.ledger_path = ledger_path
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def register(self, order_id: str, trade_id: str, symbol: str,
+                 security_id: str, side: str, qty: int, price: float) -> OrderRecord:
+        """Register a new order immediately after placement."""
+        txn = "BUY" if side == "LONG" else "SELL"
+        rec = OrderRecord(
+            order_id=order_id, trade_id=trade_id, symbol=symbol,
+            security_id=security_id, side=side, txn=txn,
+            requested_qty=qty, price=price
+        )
+        self.orders[order_id] = rec
+        log.info(f"ORDER REGISTERED: {trade_id} {symbol} {side} qty={qty} oid={order_id}")
+        return rec
+
+    def resolve(self, order_id: str, dhan_gateway) -> OrderRecord:
+        """
+        Resolve an order's final state by querying broker.
+        
+        This is the CORE of the expert's architecture:
+        Never assume state — always verify with broker.
+        
+        Flow:
+            1. Query order status
+            2. Query tradebook for fills
+            3. Query positions for net qty
+            4. Determine final state
+            5. Return authoritative result
+        """
+        rec = self.orders.get(order_id)
+        if not rec:
+            log.error(f"ORDER NOT TRACKED: {order_id}")
+            return None
+
+        sid = rec.security_id
+        side = rec.side
+
+        # Step 1: Query order status from broker
+        order_status = {}
+        try:
+            order_status = dhan_gateway.get_order_status(order_id) or {}
+        except Exception as e:
+            log.warning(f"Order status query failed for {order_id}: {e}")
+
+        broker_status = str(order_status.get("orderStatus", "")).upper()
+        broker_qty = int(order_status.get("filledQty", 0) or
+                        order_status.get("tradedQty", 0) or 0)
+        broker_price = float(order_status.get("averageTradedPrice", 0) or 0)
+
+        # Step 2: Map broker status to our state
+        if broker_status in ("TRADED", "FILLED"):
+            rec.state = OrderState.FILLED
+            rec.filled_qty = broker_qty or rec.requested_qty
+            rec.avg_fill_price = broker_price or rec.price
+            rec.resolution_method = "normal"
+
+        elif broker_status in ("PART_TRADED", "PARTIALLY_FILLED"):
+            rec.state = OrderState.PARTIAL
+            rec.filled_qty = broker_qty
+            rec.avg_fill_price = broker_price or rec.price
+            rec.resolution_method = "normal"
+
+        elif broker_status in ("CANCELLED", "REJECTED", "EXPIRED"):
+            # Even if cancelled, check if partial fill happened
+            if broker_qty > 0:
+                rec.state = OrderState.PARTIAL
+                rec.filled_qty = broker_qty
+                rec.avg_fill_price = broker_price or rec.price
+                rec.resolution_method = "partial_before_cancel"
+            else:
+                rec.state = OrderState(broker_status) if broker_status in ("CANCELLED", "REJECTED", "EXPIRED") else OrderState.CANCELLED
+                rec.filled_qty = 0
+
+        elif broker_status in ("PENDING", "TRANSIT", ""):
+            # Order still pending — this is where the old code returned TIMEOUT
+            # Expert says: DON'T GIVE UP. Cancel and verify.
+            log.warning(f"ORDER STILL PENDING: {order_id} {rec.symbol} — attempting cancel + verify")
+
+            # Cancel the order
+            try:
+                dhan_gateway.cancel_order(order_id)
+                time.sleep(0.8)
+            except Exception as e:
+                log.warning(f"Cancel attempt for {order_id}: {e}")
+
+            # Re-query after cancel
+            try:
+                order_status = dhan_gateway.get_order_status(order_id) or {}
+                broker_status = str(order_status.get("orderStatus", "")).upper()
+                broker_qty = int(order_status.get("filledQty", 0) or
+                                order_status.get("tradedQty", 0) or 0)
+                broker_price = float(order_status.get("averageTradedPrice", 0) or 0)
+            except Exception:
+                pass
+
+            # Step 3: Check actual broker position (ultimate truth)
+            net_qty = 0
+            try:
+                net_qty = int(dhan_gateway.verify_position(sid, side))
+            except Exception as e:
+                log.warning(f"Position verify failed for {sid}: {e}")
+
+            if broker_qty > 0 or (side == "LONG" and net_qty > 0) or (side == "SHORT" and net_qty < 0):
+                # FILLED despite timeout — race condition or delayed fill
+                rec.state = OrderState.FILLED
+                rec.filled_qty = broker_qty if broker_qty > 0 else abs(net_qty)
+                rec.avg_fill_price = broker_price if broker_price > 0 else rec.price
+                rec.resolution_method = "race_adoption"
+                log.warning(f"RACE ADOPTION: {rec.symbol} {order_id} — broker filled {rec.filled_qty} @ {rec.avg_fill_price}")
+            else:
+                # Truly no fill — safe to mark as cancelled
+                rec.state = OrderState.CANCELLED
+                rec.filled_qty = 0
+                rec.resolution_method = "timeout_cancelled"
+                log.info(f"ORDER CANCELLED (no fill): {rec.symbol} {order_id}")
+
+        else:
+            # Unknown status — query positions as fallback
+            log.warning(f"UNKNOWN ORDER STATUS: {broker_status} for {order_id}")
+            net_qty = 0
+            try:
+                net_qty = int(dhan_gateway.verify_position(sid, side))
+            except Exception:
+                pass
+            if (side == "LONG" and net_qty > 0) or (side == "SHORT" and net_qty < 0):
+                rec.state = OrderState.FILLED
+                rec.filled_qty = abs(net_qty)
+                rec.avg_fill_price = broker_price or rec.price
+                rec.resolution_method = "position_discovery"
+            else:
+                rec.state = OrderState.UNKNOWN
+                rec.resolution_method = "unresolved"
+
+        rec.resolved_at = datetime.now(IST).isoformat()
+        rec.broker_verified = True
+        self._persist(rec)
+        return rec
+
+    def _persist(self, rec: OrderRecord):
+        """Append to trade ledger file."""
+        try:
+            with open(self.ledger_path, "a") as f:
+                f.write(json.dumps(asdict(rec), default=str) + "\n")
+        except Exception as e:
+            log.error(f"Ledger write failed: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2. BROKER RECONCILER — Orphan Adoption
+# ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class AdoptedPosition:
+    """A position adopted from broker that wasn't locally tracked."""
+    security_id: str
+    symbol: str
+    side: str
+    qty: int
+    avg_price: float
+    initial_sl: float
+    sl_order_id: Optional[str] = None
+    adopted_at: str = ""
+    trade_id: str = ""
+
+    def __post_init__(self):
+        if not self.adopted_at:
+            self.adopted_at = datetime.now(IST).isoformat()
+        if not self.trade_id:
+            self.trade_id = f"ADOPT_{uuid.uuid4().hex[:8]}"
+
+
+class BrokerReconciler:
+    """
+    Discovers broker positions not in local state and ADOPTS them.
+    
+    Expert's mandate: ORPHAN_UNRECOVERABLE should almost never be the final state.
+    Instead: identify → find orders → determine avg fill → create local position → install SL.
+    """
+
+    def __init__(self, dhan, bot_instance):
+        self.dhan = dhan
+        self.bot = bot_instance
+        self.adoption_log: List[AdoptedPosition] = []
+        self.mismatch_count = 0
+
+    def reconcile(self, active_positions: Dict) -> Dict[str, Any]:
+        """
+        Compare broker positions vs local positions.
+        Adopt any orphans. Return reconciliation report.
+        """
+        report = {
+            "broker_positions": 0,
+            "local_positions": len(active_positions),
+            "matched": 0,
+            "orphans_found": 0,
+            "orphans_adopted": 0,
+            "adoption_failures": 0,
+            "mismatch": False,
+            "details": []
+        }
+
+        # Fetch broker positions
+        try:
+            broker_pos = self.dhan.get_positions() or []
+        except Exception as e:
+            log.error(f"RECONCILE: Broker position fetch failed: {e}")
+            report["mismatch"] = True
+            self.mismatch_count += 1
+            return report
+
+        # Filter to positions with non-zero net qty
+        active_broker = [bp for bp in broker_pos if int(bp.get("netQty", 0)) != 0]
+        report["broker_positions"] = len(active_broker)
+
+        local_sids = set(str(sid) for sid in active_positions.keys())
+
+        for bp in active_broker:
+            sid = str(bp.get("securityId", ""))
+            symbol = bp.get("tradingSymbol", "?")
+            net_qty = int(bp.get("netQty", 0))
+            side = "LONG" if net_qty > 0 else "SHORT"
+            avg_price = float(bp.get("costPrice", 0) or bp.get("buyAvg" if net_qty > 0 else "sellAvg", 0))
+
+            if sid in local_sids:
+                report["matched"] += 1
+                continue
+
+            # ORPHAN FOUND — adopt it
+            report["orphans_found"] += 1
+            log.warning(f"ORPHAN DETECTED: {symbol} sid={sid} {side} qty={abs(net_qty)} @ {avg_price}")
+
+            adopted = self._adopt_position(sid, symbol, side, abs(net_qty), avg_price)
+            if adopted:
+                report["orphans_adopted"] += 1
+                report["details"].append(f"ADOPTED: {symbol} {side} {abs(net_qty)} @ {avg_price}")
+            else:
+                report["adoption_failures"] += 1
+                report["details"].append(f"ADOPTION FAILED: {symbol} {side} — emergency exit attempted")
+
+        report["mismatch"] = report["orphans_found"] > 0 or report["adoption_failures"] > 0
+        if report["mismatch"]:
+            self.mismatch_count += 1
+        else:
+            self.mismatch_count = 0
+
+        return report
+
+    def _adopt_position(self, sid: str, symbol: str, side: str,
+                        qty: int, avg_price: float) -> bool:
+        """
+        V10.1-R: Adopt an orphan ONLY if a broker-side protective SL is
+        accepted AND verified. If protection cannot be established, the
+        position is emergency-closed and NOT registered as active.
+        Entries stay blocked (mismatch) until reconciliation is clean.
+        """
+        try:
+            if side == "LONG":
+                initial_sl = round(avg_price * 0.9925, 2)
+            else:
+                initial_sl = round(avg_price * 1.0075, 2)
+
+            # Place protective SL and REQUIRE broker acknowledgement
+            sl_oid = None
+            try:
+                sl_resp = self.dhan.place_hard_sl(sid, qty, side, initial_sl)
+                sl_oid = (sl_resp or {}).get("orderId") if isinstance(sl_resp, dict) else None
+            except Exception as e:
+                log.error(f"ADOPT SL EXCEPTION for {symbol}: {e}")
+
+            # Verify SL order actually accepted by broker
+            sl_ok = False
+            if sl_oid:
+                try:
+                    st = (self.dhan.get_order_status(sl_oid) or {}).get("orderStatus", "").upper()
+                    sl_ok = st in ("PENDING", "TRANSIT", "TRADED", "FILLED")
+                except Exception as e:
+                    log.error(f"ADOPT SL VERIFY EXCEPTION for {symbol}: {e}")
+
+            if not sl_ok:
+                # V10.1-R: DO NOT track unprotected. Emergency close + verify flat.
+                log.error(f"ADOPT FAILED (no confirmed SL): {symbol} {side} qty={qty} — EMERGENCY CLOSING")
+                try:
+                    txn = "SELL" if side == "LONG" else "BUY"
+                    self.dhan.place_order(sid, qty, 0, txn, "MARKET")
+                    log.warning(f"EMERGENCY CLOSE submitted for orphan {symbol} {side} qty={qty}")
+                except Exception as ce:
+                    log.error(f"EMERGENCY CLOSE FAILED for {symbol}: {ce}")
+                # Keep mismatch active — entries stay blocked
+                self._broker_mismatch = True
+                if not self.kill_switch_active:
+                    self.kill_switch_active = True
+                    self.kill_reasons.append(f"ORPHAN_UNPROTECTED_{symbol}")
+                return False
+
+            # SL confirmed — safe to register as active
+            trade_id = f"ADOPT_{uuid.uuid4().hex[:8]}"
+            position_data = {
+                "symbol": symbol, "security_id": sid, "side": side, "qty": qty,
+                "entry": avg_price, "sl": initial_sl, "initial_sl": initial_sl,
+                "sl_order_id": sl_oid, "peak": avg_price, "best_r": 0.0,
+                "entry_time": datetime.now(IST).isoformat(), "trade_id": trade_id,
+                "adopted": True, "adoption_reason": "BROKER_RECONCILE"
+            }
+            self.bot.active_positions[sid] = position_data
+            log.warning(f"POSITION ADOPTED (SL confirmed): {symbol} {side} qty={qty} @ {avg_price} SL={initial_sl} sl_oid={sl_oid}")
+            self.adoption_log.append(AdoptedPosition(
+                security_id=sid, symbol=symbol, side=side,
+                qty=qty, avg_price=avg_price, initial_sl=initial_sl,
+                sl_order_id=sl_oid, trade_id=trade_id
+            ))
+            return True
+        except Exception as e:
+            log.error(f"_adopt_position exception for {symbol}: {e}")
+            return False
+
+
+class ExecutionGuard:
+    """Controls entry gating based on execution integrity (V10.1-R)."""
+
+    def __init__(self):
+        self.kill_switch_active = False
+        self.kill_reasons: List[str] = []
+        self.consecutive_api_failures = 0
+        self.max_api_failures = 3
+        self.sl_failures = 0
+        self.max_sl_failures = 2
+
+    def entries_allowed(self) -> tuple:
+        """Kill-switch gate (V10.1-R corrected — real fields, no timeout).
+
+        A broker/local mismatch NEVER auto-clears. It clears only when
+        reconciliation is genuinely clean (report_reconciliation_clean).
+        """
+        if self.kill_switch_active:
+            return False, f"KILL_SWITCH_ACTIVE: {'; '.join(self.kill_reasons) if self.kill_reasons else 'unknown'}"
+        if self.sl_failures >= self.max_sl_failures:
+            return False, f"KILL_SWITCH_SL_FAILURES_{self.sl_failures}"
+        if self.consecutive_api_failures >= self.max_api_failures:
+            return False, f"KILL_SWITCH_API_FAILURES_{self.consecutive_api_failures}"
+        if getattr(self, "_broker_mismatch", False):
+            return False, "KILL_SWITCH_BROKER_MISMATCH"
+        return True, "OK"
+
+    def report_reconciliation_clean(self):
+        """Called only when broker == local (genuinely clean). Clears mismatch."""
+        if getattr(self, "_broker_mismatch", False):
+            self._broker_mismatch = False
+            log.info("KILL-SWITCH CLEARED: reconciliation genuinely clean")
+        # Reset kill-switch if it was mismatch-only
+        if self.kill_switch_active and self.kill_reasons:
+            self.kill_reasons = [r for r in self.kill_reasons if "MISMATCH" not in r.upper()]
+            if not self.kill_reasons:
+                self.kill_switch_active = False
+                log.info("KILL-SWITCH DEACTIVATED: all mismatch reasons cleared")
+
+
+
+    def report_mismatch(self, details: str):
+        """Report a broker/local mismatch — activates kill-switch."""
+        self.kill_switch_active = True
+        reason = f"BROKER_MISMATCH: {details}"
+        if reason not in self.kill_reasons:
+            self.kill_reasons.append(reason)
+        log.error(f"KILL-SWITCH ACTIVATED: {reason}")
+
+    def report_sl_failure(self, symbol: str):
+        """Report an SL placement failure."""
+        self.sl_failures += 1
+        if self.sl_failures >= self.max_sl_failures:
+            self.kill_switch_active = True
+            reason = f"SL_FAILURES: {self.sl_failures} consecutive"
+            if reason not in self.kill_reasons:
+                self.kill_reasons.append(reason)
+            log.error(f"KILL-SWITCH ACTIVATED: {reason}")
+
+    def report_api_failure(self, endpoint: str):
+        """Report a broker API failure."""
+        self.consecutive_api_failures += 1
+        if self.consecutive_api_failures >= self.max_api_failures:
+            self.kill_switch_active = True
+            reason = f"API_UNHEALTHY: {self.consecutive_api_failures} consecutive failures"
+            if reason not in self.kill_reasons:
+                self.kill_reasons.append(reason)
+            log.error(f"KILL-SWITCH ACTIVATED: {reason}")
+
+    def report_api_success(self):
+        """Report a successful API call — resets failure counter."""
+        self.consecutive_api_failures = 0
+
+    def report_reconcile_ok(self):
+        """Report successful reconciliation with no mismatches."""
+        # Only clear mismatch-related kill reasons
+        self.kill_reasons = [r for r in self.kill_reasons if "BROKER_MISMATCH" not in r]
+        if not self.kill_reasons:
+            if self.kill_switch_active:
+                log.info("KILL-SWITCH CLEARED: All issues resolved")
+            self.kill_switch_active = False
+        self.sl_failures = 0
+
+    def report_sl_success(self):
+        """Report successful SL placement — resets SL failure counter."""
+        self.sl_failures = 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 4. TRADE LEDGER
+# ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class TradeRecord:
+    """Permanent trade lifecycle record."""
+    trade_id: str
+    symbol: str
+    security_id: str
+    side: str
+    strategy: str = ""
+    setup_type: str = ""
+    score: float = 0.0
+
+    # Entry
+    signal_time: str = ""
+    order_id: str = ""
+    requested_qty: int = 0
+    filled_qty: int = 0
+    avg_entry: float = 0.0
+    entry_method: str = ""  # normal, race_adoption, orphan_adoption
+
+    # Risk
+    initial_sl: float = 0.0
+    current_sl: float = 0.0
+    sl_order_id: str = ""
+    sl_confirmed: bool = False
+    risk_per_share: float = 0.0
+
+    # Management
+    mfe: float = 0.0  # Maximum Favourable Excursion
+    mae: float = 0.0  # Maximum Adverse Excursion
+    peak_r: float = 0.0
+
+    # Exit
+    exit_reason: str = ""
+    exit_price: float = 0.0
+    exit_time: str = ""
+    realised_pnl: float = 0.0
+    realised_r: float = 0.0
+    broker_confirmed: bool = False
+
+    # Metadata
+    created_at: str = ""
+    closed: bool = False
+
+
+class TradeLedger:
+    """
+    Permanent trade lifecycle tracking.
+    Every trade gets a TRADE_ID that follows it from signal to P&L.
+    """
+
+    def __init__(self, ledger_path: Path):
+        self.ledger_path = ledger_path
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        self.active_trades: Dict[str, TradeRecord] = {}
+
+    def open_trade(self, symbol: str, security_id: str, side: str,
+                   score: float = 0.0, strategy: str = "", setup_type: str = "",
+                   signal_time: str = "") -> TradeRecord:
+        """Create a new trade record at signal time."""
+        trade_id = f"T_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        rec = TradeRecord(
+            trade_id=trade_id, symbol=symbol, security_id=security_id,
+            side=side, score=score, strategy=strategy, setup_type=setup_type,
+            signal_time=signal_time or datetime.now(IST).isoformat(),
+            created_at=datetime.now(IST).isoformat()
+        )
+        self.active_trades[trade_id] = rec
+        return rec
+
+    def record_fill(self, trade_id: str, order_id: str, filled_qty: int,
+                    avg_price: float, entry_method: str = "normal"):
+        """Record order fill details."""
+        rec = self.active_trades.get(trade_id)
+        if not rec:
+            return
+        rec.order_id = order_id
+        rec.filled_qty = filled_qty
+        rec.avg_entry = avg_price
+        rec.entry_method = entry_method
+        rec.risk_per_share = abs(avg_price - rec.initial_sl) if rec.initial_sl else 0
+
+    def record_sl(self, trade_id: str, initial_sl: float, sl_order_id: str,
+                  confirmed: bool = False):
+        """Record SL details."""
+        rec = self.active_trades.get(trade_id)
+        if not rec:
+            return
+        rec.initial_sl = initial_sl
+        rec.current_sl = initial_sl
+        rec.sl_order_id = sl_order_id
+        rec.sl_confirmed = confirmed
+        rec.risk_per_share = abs(rec.avg_entry - initial_sl) if rec.avg_entry else 0
+
+    def update_extremes(self, trade_id: str, current_price: float):
+        """Update MFE/MAE during position management."""
+        rec = self.active_trades.get(trade_id)
+        if not rec or not rec.avg_entry:
+            return
+        if rec.side == "LONG":
+            excursion = current_price - rec.avg_entry
+        else:
+            excursion = rec.avg_entry - current_price
+
+        if excursion > rec.mfe:
+            rec.mfe = excursion
+        if excursion < -rec.mae:  # MAE is stored as positive
+            rec.mae = abs(excursion)
+
+        if rec.risk_per_share > 0:
+            current_r = excursion / rec.risk_per_share
+            if current_r > rec.peak_r:
+                rec.peak_r = current_r
+
+    def close_trade(self, trade_id: str, exit_price: float, exit_reason: str,
+                    broker_confirmed: bool = False):
+        """Close a trade and calculate final P&L."""
+        rec = self.active_trades.get(trade_id)
+        if not rec:
+            return
+        rec.exit_price = exit_price
+        rec.exit_reason = exit_reason
+        rec.exit_time = datetime.now(IST).isoformat()
+        rec.broker_confirmed = broker_confirmed
+        rec.closed = True
+
+        if rec.side == "LONG":
+            rec.realised_pnl = (exit_price - rec.avg_entry) * rec.filled_qty
+        else:
+            rec.realised_pnl = (rec.avg_entry - exit_price) * rec.filled_qty
+
+        if rec.risk_per_share > 0:
+            if rec.side == "LONG":
+                rec.realised_r = (exit_price - rec.avg_entry) / rec.risk_per_share
+            else:
+                rec.realised_r = (rec.avg_entry - exit_price) / rec.risk_per_share
+
+        self._persist(rec)
+        del self.active_trades[trade_id]
+
+    def _persist(self, rec: TradeRecord):
+        """Write completed trade to permanent ledger."""
+        try:
+            with open(self.ledger_path, "a") as f:
+                f.write(json.dumps(asdict(rec), default=str) + "\n")
+        except Exception as e:
+            log.error(f"Trade ledger write failed: {e}")
+
+    def get_today_trades(self) -> List[Dict]:
+        """Read today's completed trades from ledger."""
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        trades = []
+        try:
+            if self.ledger_path.exists():
+                with open(self.ledger_path) as f:
+                    for line in f:
+                        try:
+                            t = json.loads(line.strip())
+                            if t.get("created_at", "").startswith(today):
+                                trades.append(t)
+                        except json.JSONDecodeError:
+                            continue
+        except Exception:
+            pass
+        return trades
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 5. UNIFIED INTERFACE
+# ─────────────────────────────────────────────────────────────────────
+
+class ExecutionIntegrity:
+    """
+    Unified interface for the execution integrity system.
+    
+    Usage:
+        ei = ExecutionIntegrity(dhan_gateway, bot_instance, base_path)
+        
+        # Before any entry:
+        allowed, reason = ei.guard.entries_allowed()
+        if not allowed:
+            log.warning(f"ENTRY BLOCKED: {reason}")
+            return False, reason
+        
+        # Open trade record at signal time:
+        trade = ei.ledger.open_trade(symbol, sid, side, score)
+        
+        # After placing order:
+        ei.tracker.register(oid, trade.trade_id, symbol, sid, side, qty, price)
+        
+        # Resolve order (replaces verify_fill + timeout logic):
+        order_rec = ei.tracker.resolve(oid, dhan_gateway)
+        if order_rec.state in (OrderState.FILLED, OrderState.PARTIAL):
+            # Proceed with SL placement
+            ...
+        else:
+            # No fill — cancel trade record
+            ...
+        
+        # After SL placement:
+        ei.confirm_sl(sl_oid, sid, side, trigger_price, trade.trade_id)
+        
+        # Every cycle:
+        recon = ei.reconcile()
+        if recon["mismatch"]:
+            ei.guard.report_mismatch(str(recon["details"]))
+    """
+
+    def __init__(self, dhan, bot_instance, base_path: str = None):
+        if base_path is None:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        
+        base = Path(base_path)
+        ledger_dir = base / "ledger"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+
+        self.dhan = dhan
+        self.bot = bot_instance
+        self.guard = ExecutionGuard()
+        self.tracker = OrderStateTracker(dhan, ledger_dir / f"orders_{today}.jsonl")
+        self.reconciler = BrokerReconciler(dhan, bot_instance)
+        self.ledger = TradeLedger(ledger_dir / f"trades_{today}.jsonl")
+
+    def resolve_order(self, order_id: str) -> OrderRecord:
+        """Resolve an order to its final state using broker as truth."""
+        return self.tracker.resolve(order_id, self.dhan)
+
+    def reconcile(self) -> Dict[str, Any]:
+        """Run broker reconciliation. Returns report dict."""
+        report = self.reconciler.reconcile(self.bot.active_positions)
+        
+        if report["mismatch"]:
+            self.guard.report_mismatch(
+                f"orphans={report['orphans_found']} failures={report['adoption_failures']}"
+            )
+        else:
+            self.guard.report_reconcile_ok()
+        
+        return report
+
+    def confirm_sl(self, sl_order_id: str, security_id: str, side: str,
+                   trigger_price: float, trade_id: str = "") -> bool:
+        """
+        Verify SL order is actually live on broker.
+        Returns True if confirmed, False if failed.
+        """
+        if not sl_order_id:
+            self.guard.report_sl_failure("NO_ORDER_ID")
+            return False
+
+        try:
+            status = (self.dhan.get_order_status(sl_order_id) or {}).get("orderStatus", "").upper()
+            if status in ("PENDING", "TRANSIT"):
+                # SL is live on broker
+                self.guard.report_sl_success()
+                if trade_id:
+                    self.ledger.record_sl(trade_id, trigger_price, sl_order_id, confirmed=True)
+                log.info(f"SL CONFIRMED: {security_id} trigger={trigger_price} oid={sl_order_id}")
+                return True
+            else:
+                # SL not in expected state
+                log.error(f"SL NOT CONFIRMED: {security_id} status={status} oid={sl_order_id}")
+                self.guard.report_sl_failure(f"{security_id} status={status}")
+                return False
+        except Exception as e:
+            log.error(f"SL CONFIRM FAILED: {security_id}: {e}")
+            self.guard.report_sl_failure(f"{security_id}: {e}")
+            return False
+
+    def eod_force_close(self) -> Dict[str, Any]:
+        """
+        End-of-day: close ALL broker positions (local + orphans).
+        This is the ultimate safety net.
+        """
+        report = {"closed_local": 0, "closed_orphans": 0, "failures": []}
+
+        try:
+            broker_pos = self.dhan.get_positions() or []
+        except Exception as e:
+            report["failures"].append(f"Broker fetch failed: {e}")
+            return report
+
+        for bp in broker_pos:
+            nq = int(bp.get("netQty", 0))
+            if nq == 0:
+                continue
+
+            sid = str(bp.get("securityId", ""))
+            symbol = bp.get("tradingSymbol", "?")
+            txn = "SELL" if nq > 0 else "BUY"
+
+            is_local = sid in self.bot.active_positions
+            label = "LOCAL" if is_local else "ORPHAN"
+
+            try:
+                self.dhan.place_order(sid, abs(nq), 0, txn, "MARKET")
+                log.warning(f"EOD CLOSE ({label}): {symbol} {txn} {abs(nq)}")
+                if is_local:
+                    report["closed_local"] += 1
+                else:
+                    report["closed_orphans"] += 1
+            except Exception as e:
+                log.error(f"EOD CLOSE FAILED ({label}): {symbol}: {e}")
+                report["failures"].append(f"{symbol}: {e}")
+
+        return report

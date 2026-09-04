@@ -1,0 +1,54 @@
+{
+  "date": "2026-08-27",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "JUBLFOOD",
+      "company": "Jubilant Foodworks Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "27-Aug-2026 18:56:54",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "NTPC",
+      "company": "NTPC Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "27-Aug-2026 18:54:22",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "MARKSANS",
+      "company": "Marksans Pharma Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "27-Aug-2026 18:54:03",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "MAXESTATES",
+      "company": "Max Estates Limited",
+      "purpose": "Fund Raising",
+      "date": "28-Aug-2026"
+    },
+    {
+      "symbol": "CANFINHOME",
+      "company": "Can Fin Homes Limited",
+      "purpose": "Fund Raising",
+      "date": "29-Aug-2026"
+    },
+    {
+      "symbol": "KIRIINDUS",
+      "company": "Kiri Industries Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "31-Aug-2026"
+    },
+    {
+      "symbol": "PVRINOX",
+      "company": "PVR INOX Limited",
+      "purpose": "Buyback",
+      "date": "31-Aug-2026"
+    }
+  ]
+}

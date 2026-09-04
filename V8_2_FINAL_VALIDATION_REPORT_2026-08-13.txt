@@ -1,0 +1,31 @@
+V8.2 FINAL VALIDATION — 2026-08-13
+
+OFFLINE / MOCK VALIDATION PASSED
+1. Python compilation of complete package.
+2. Dhan marketfeed actual response envelope parsing (data -> NSE_EQ -> security -> last_price).
+3. Dhan OHLC actual response envelope parsing.
+4. Dhan margin calculator path.
+5. Dhan order placement path.
+6. Dhan full TRADED fill path.
+7. Dhan PART_TRADED path with remainingQuantity.
+8. Dhan 202 Accepted cancellation path.
+9. Dhan profile/fund/static-IP preflight mock.
+10. 100-point LONG/SHORT scoring.
+11. Candidate >=50 vs final entry >=60 separation.
+12. Current intraday mover discovery independent of opening gap.
+13. Sudden-mover continuation without ORB requirement.
+14. LONG entry -> margin -> BUY -> fill -> position -> hard SL -> active state.
+15. SHORT entry -> margin -> SELL -> fill -> position -> hard SL -> active state.
+16. Hard-SL failure -> emergency exit -> no active unprotected state.
+17. 1x / 2x / 4.5x margin tier boundaries.
+18. Directional target correctness for LONG and SHORT.
+19. Complete package compileall.
+
+LIVE LIMITATION
+No real Dhan order was placed from this environment. Live readiness still requires the user's Dhan access token, client ID, registered static IP, active segment/permissions and an EC2 dry-run/sandbox preflight. The Dhan v2 documentation confirms that order placement/modification/cancellation require static-IP setup and that LTP/market quote, margin calculator, order, trade and position APIs are available.
+
+CANONICAL LIVE ENTRY FILE
+trading_bot_v82.py
+
+DO NOT RUN
+trading_bot.py as a second live service.

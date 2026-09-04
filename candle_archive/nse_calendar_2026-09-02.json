@@ -1,0 +1,55 @@
+{
+  "date": "2026-09-02",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "HEXT",
+      "company": "Hexaware Technologies Limited",
+      "desc": "Press Release",
+      "an_dt": "02-Sep-2026 18:56:11",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "INDIANB",
+      "company": "Indian Bank",
+      "desc": "Copy of Newspaper Publication",
+      "an_dt": "02-Sep-2026 18:53:14",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "INOXGREEN",
+      "company": "Inox Green Energy Services Limited",
+      "desc": "Copy of Newspaper Publication",
+      "an_dt": "02-Sep-2026 18:52:15",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "MOTILALOFS",
+      "company": "Motilal Oswal Financial Services Limited",
+      "desc": "Updates",
+      "an_dt": "02-Sep-2026 18:49:49",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "CANBK",
+      "company": "Canara Bank",
+      "purpose": "Fund Raising",
+      "date": "03-Sep-2026"
+    },
+    {
+      "symbol": "UNIINFO",
+      "company": "Uniinfo Telecom Services Limited",
+      "purpose": "Other business matters",
+      "date": "04-Sep-2026"
+    },
+    {
+      "symbol": "PNBHOUSING",
+      "company": "PNB Housing Finance Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "07-Sep-2026"
+    }
+  ]
+}

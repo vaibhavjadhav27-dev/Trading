@@ -1,0 +1,19 @@
+{
+  "trade": {
+    "symbol": "AEGISLOG",
+    "security_id": "40",
+    "entry_price": "1290.0",
+    "qty": "22",
+    "sl": "1250.01",
+    "r_value": "39.99",
+    "max_price": "1290.0",
+    "trailing_sl": "1250.01",
+    "phase": "INITIAL",
+    "score": "1.8182",
+    "tier": "CURATED",
+    "entry_time": "2026-07-15T09:42:17.732574",
+    "order_id": "321260715164003",
+    "expected_entry": "1290.0",
+    "entry_slippage": "0.0"
+  }
+}

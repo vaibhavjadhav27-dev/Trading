@@ -1,0 +1,18 @@
+[Unit]
+Description=Trading Bot V8.4 (staged, guarded)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bot/V84_RELEASE_DIR
+Environment=V82_DRY_RUN=1
+Environment=V84_ENABLE_LIVE=0
+Environment=V82_ENFORCE_STATIC_IP=1
+ExecStart=/home/ubuntu/trading-bot/venv/bin/python3 /home/ubuntu/trading-bot/V84_RELEASE_DIR/trading_bot_v84.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

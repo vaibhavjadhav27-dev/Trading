@@ -1,0 +1,50 @@
+[
+  {
+    "time": "2026-08-31T11:25:06.830267",
+    "contract": "CRUDEOIL",
+    "side": "BUY",
+    "price": 8230.0
+  },
+  {
+    "time": "2026-08-31T11:25:06.830552",
+    "contract": "GOLD",
+    "side": "BUY",
+    "price": 155318.0
+  },
+  {
+    "time": "2026-08-31T11:25:06.830755",
+    "contract": "SILVER",
+    "side": "BUY",
+    "price": 236470.0
+  },
+  {
+    "time": "2026-08-31T11:25:06.830928",
+    "contract": "SILVERM",
+    "side": "BUY",
+    "price": 239028.0
+  },
+  {
+    "time": "2026-08-31T11:25:06.831131",
+    "contract": "NATGASMINI",
+    "side": "BUY",
+    "price": 277.7
+  },
+  {
+    "time": "2026-08-31T11:26:36.876002",
+    "contract": "NATURALGAS",
+    "side": "BUY",
+    "price": 278.1
+  },
+  {
+    "time": "2026-08-31T12:22:08.176394",
+    "contract": "NATURALGAS",
+    "side": "SELL",
+    "price": 274.8
+  },
+  {
+    "time": "2026-08-31T12:23:08.200191",
+    "contract": "NATGASMINI",
+    "side": "SELL",
+    "price": 274.8
+  }
+]

@@ -1,0 +1,22 @@
+V8.1 VALIDATION REPORT — 2026-08-12
+
+Offline tests:
+PASS score max <=100
+PASS component total = 100
+PASS margin 59.9 -> 0x
+PASS margin 60 -> 1x
+PASS margin 70 -> 1x
+PASS margin 70.01 -> 2x
+PASS margin 80 -> 2x
+PASS margin 80.01 -> 4.5x
+PASS margin 95 -> 4.5x
+PASS directional LONG target respects resistance
+PASS directional SHORT target respects support
+PASS candidate stage can WATCH before final 60-point entry threshold
+PASS sudden mover can enter without ORB when continuation evidence is strong
+PASS CHOPPY strong setup can enter
+PASS weak candidate rejected
+PASS full Python compileall
+
+IMPORTANT:
+This is a V8.1 strategy-layer package. The existing live trading_bot.py has NOT been silently replaced with an unverified full-loop rewrite. v81_live_adapter.py is the clean integration contract for shadow/dry-run testing. Real Dhan orders were not placed in this environment.

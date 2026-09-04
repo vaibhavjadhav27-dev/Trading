@@ -1,0 +1,80 @@
+{
+  "date": "2026-08-25",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "MGL",
+      "company": "Mahanagar Gas Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "25-Aug-2026 18:59:12",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "desc": "Copy of Newspaper Publication",
+      "an_dt": "25-Aug-2026 18:57:42",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "IDEA",
+      "company": "Vodafone Idea Limited",
+      "desc": "News Verification",
+      "an_dt": "25-Aug-2026 18:57:19",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "SANDHAR",
+      "company": "Sandhar Technologies Limited",
+      "desc": "Record Date",
+      "an_dt": "25-Aug-2026 18:50:05",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "ABDL",
+      "company": "Allied Blenders and Distillers Limited",
+      "desc": "General Updates",
+      "an_dt": "25-Aug-2026 18:48:34",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "TIMETECHNO",
+      "company": "Time Technoplast Limited",
+      "purpose": "Other business matters",
+      "date": "26-Aug-2026"
+    },
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "purpose": "Other business matters",
+      "date": "26-Aug-2026"
+    },
+    {
+      "symbol": "GENUSPOWER",
+      "company": "Genus Power Infrastructures Limited",
+      "purpose": "Dividend",
+      "date": "27-Aug-2026"
+    },
+    {
+      "symbol": "MAXESTATES",
+      "company": "Max Estates Limited",
+      "purpose": "Fund Raising",
+      "date": "28-Aug-2026"
+    },
+    {
+      "symbol": "CANFINHOME",
+      "company": "Can Fin Homes Limited",
+      "purpose": "Fund Raising",
+      "date": "29-Aug-2026"
+    },
+    {
+      "symbol": "PVRINOX",
+      "company": "PVR INOX Limited",
+      "purpose": "Buyback",
+      "date": "31-Aug-2026"
+    }
+  ]
+}

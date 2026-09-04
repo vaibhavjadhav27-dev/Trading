@@ -1,0 +1,13 @@
+{
+  "version": "V12_PRIMARY_2026_09_03",
+  "files": {
+    "trading_bot_v84.py": "4871c89be0533c36",
+    "v12_primary_strategy.py": "86e03531b97252fc",
+    "v12_independent_scoring.py": "de075b5005117d8c",
+    "v12_early_discovery.py": "e6518dd6783bb11d",
+    "v12_exit_engine.py": "7c54c9077f7912fc",
+    "V11_V12_HARDENED_COMBINED_PATCH.py": "1200fe053138b79f",
+    "execution_integrity.py": "51fe679fcfe1f433",
+    "V85_1_PATCH.py": "da243c916944eaeb"
+  }
+}

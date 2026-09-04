@@ -1,0 +1,102 @@
+{
+  "date": "2026-08-24",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "TEXRAIL",
+      "company": "Texmaco Rail & Engineering Limited",
+      "desc": "Updates",
+      "an_dt": "24-Aug-2026 18:58:41",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "HEG",
+      "company": "HEG Limited",
+      "desc": "Appointment",
+      "an_dt": "24-Aug-2026 18:58:33",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "HEG",
+      "company": "HEG Limited",
+      "desc": "General Updates",
+      "an_dt": "24-Aug-2026 18:58:33",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "HEG",
+      "company": "HEG Limited",
+      "desc": "Appointment",
+      "an_dt": "24-Aug-2026 18:58:33",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "COROMANDEL",
+      "company": "Coromandel International Limited",
+      "desc": "Updates",
+      "an_dt": "24-Aug-2026 18:55:55",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "AEGISLOG",
+      "company": "Aegis Logistics Limited",
+      "desc": "Agreements",
+      "an_dt": "24-Aug-2026 18:55:43",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TEXRAIL",
+      "company": "Texmaco Rail & Engineering Limited",
+      "desc": "Record Date",
+      "an_dt": "24-Aug-2026 18:53:21",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "company": "ICICI Bank Limited",
+      "desc": "Credit Rating",
+      "an_dt": "24-Aug-2026 18:51:48",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "WHIRLPOOL",
+      "company": "Whirlpool of India Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "24-Aug-2026 18:49:44",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "TEAMLEASE",
+      "company": "Teamlease Services Limited",
+      "purpose": "Other business matters",
+      "date": "25-Aug-2026"
+    },
+    {
+      "symbol": "TIMETECHNO",
+      "company": "Time Technoplast Limited",
+      "purpose": "Other business matters",
+      "date": "26-Aug-2026"
+    },
+    {
+      "symbol": "TPLPLASTEH",
+      "company": "TPL Plastech Limited",
+      "purpose": "Other business matters",
+      "date": "26-Aug-2026"
+    },
+    {
+      "symbol": "GENUSPOWER",
+      "company": "Genus Power Infrastructures Limited",
+      "purpose": "Dividend",
+      "date": "27-Aug-2026"
+    },
+    {
+      "symbol": "CANFINHOME",
+      "company": "Can Fin Homes Limited",
+      "purpose": "Fund Raising",
+      "date": "29-Aug-2026"
+    }
+  ]
+}

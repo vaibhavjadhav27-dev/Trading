@@ -1,0 +1,43 @@
+{
+  "date": "2026-08-18",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "ASTRAL",
+      "company": "Astral Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "18-Aug-2026 18:50:55",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "BLS",
+      "company": "BLS International Services Limited",
+      "desc": "Amalgamation/Merger",
+      "an_dt": "18-Aug-2026 18:47:52",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "HOMEFIRST",
+      "company": "Home First Finance Company India Limited",
+      "desc": "General Updates",
+      "an_dt": "18-Aug-2026 18:47:35",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "LUMAXTECH",
+      "company": "Lumax Auto Technologies Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "18-Aug-2026 18:45:02",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "FEDERALBNK",
+      "company": "The Federal Bank  Limited",
+      "purpose": "Fund Raising",
+      "date": "21-Aug-2026"
+    }
+  ]
+}

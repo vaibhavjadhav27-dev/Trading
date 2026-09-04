@@ -1,0 +1,19 @@
+{
+  "trade": {
+    "symbol": "TTKPRESTIG",
+    "security_id": "3546",
+    "entry_price": "728.55",
+    "qty": "21",
+    "sl": "695.07",
+    "r_value": "33.48",
+    "max_price": "728.55",
+    "trailing_sl": "695.07",
+    "phase": "INITIAL",
+    "score": "1.8182",
+    "tier": "CURATED",
+    "entry_time": "2026-07-28T14:32:19.010110",
+    "order_id": "34126072849503",
+    "expected_entry": "728.55",
+    "entry_slippage": "0.0"
+  }
+}

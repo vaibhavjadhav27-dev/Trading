@@ -1,0 +1,14 @@
+{
+  "trade": {
+    "exit": {
+      "symbol": "UNICHEMLAB",
+      "side": "LONG",
+      "qty": 66,
+      "entry": 538.05,
+      "exit": 541.15,
+      "pnl_pct": 0.5761546324691056,
+      "reason": "V855_PROFIT_FADING_CONFIRMED",
+      "exit_time": "2026-08-25T11:40:02.920466"
+    }
+  }
+}

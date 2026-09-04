@@ -1,0 +1,1294 @@
+{
+  "version": "V11.0",
+  "saved_at": "2026-09-04T09:12:08.334911+00:00",
+  "candidates": {
+    "NIACL": {
+      "symbol": "NIACL",
+      "security_id": "399",
+      "first_seen": "2026-09-04T12:17:14.309320",
+      "last_seen": "2026-09-04T13:05:41.862268",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:17:14.309320",
+          "ltp": 226.02,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.6198361217232894,
+          "momentum_5m": -0.1542869737712116,
+          "atr": 2.277567567567568
+        },
+        {
+          "time": "2026-09-04T12:33:18.989886",
+          "ltp": 227.77,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.4572072566444075,
+          "momentum_5m": 0.10123239436621301,
+          "atr": 2.2637500000000004
+        },
+        {
+          "time": "2026-09-04T13:05:41.862268",
+          "ltp": 232.38,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 3.532447354182316,
+          "momentum_5m": 0.9122502172024483,
+          "atr": 2.3289130434782606
+        }
+      ],
+      "observation_count": 3,
+      "price_history": [
+        226.02,
+        227.77,
+        232.38
+      ],
+      "volume_history": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "high_watermark": 232.38,
+      "low_watermark": 226.02,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_VOLUME_CONFIRMATION_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "PINELABS": {
+      "symbol": "PINELABS",
+      "security_id": "759820",
+      "first_seen": "2026-09-04T12:17:14.815007",
+      "last_seen": "2026-09-04T12:17:14.815007",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:17:14.815007",
+          "ltp": 167.45,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.67284954870451,
+          "momentum_5m": 0.2150666109086652,
+          "atr": 0.9332432432432424
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        167.45
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 167.45,
+      "low_watermark": 167.45,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "MEDANTA": {
+      "symbol": "MEDANTA",
+      "security_id": "11956",
+      "first_seen": "2026-09-04T12:17:15.312786",
+      "last_seen": "2026-09-04T12:17:15.312786",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:17:15.312786",
+          "ltp": 1480.0,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 6.514032925575712,
+          "momentum_5m": 0.31186440677966054,
+          "atr": 4.721621621621629
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        1480.0
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 1480.0,
+      "low_watermark": 1480.0,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "PFC": {
+      "symbol": "PFC",
+      "security_id": "14299",
+      "first_seen": "2026-09-04T12:17:15.814574",
+      "last_seen": "2026-09-04T14:10:02.818754",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:17:15.814574",
+          "ltp": 355.0,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.6088528506741315,
+          "momentum_5m": 0.028180921516129942,
+          "atr": 0.8121621621621594
+        },
+        {
+          "time": "2026-09-04T14:10:02.818754",
+          "ltp": 356.65,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.6128932616772715,
+          "momentum_5m": 0.15445099691095976,
+          "atr": 0.9703389830508456
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        355.0,
+        356.65
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 356.65,
+      "low_watermark": 355.0,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_ENTRY_CONFIRMATION_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "DEVYANI": {
+      "symbol": "DEVYANI",
+      "security_id": "5373",
+      "first_seen": "2026-09-04T12:33:18.485677",
+      "last_seen": "2026-09-04T12:33:18.485677",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:33:18.485677",
+          "ltp": 142.67,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 3.1474195123352193,
+          "momentum_5m": 0.4226840436773571,
+          "atr": 0.5612499999999969
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        142.67
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 142.67,
+      "low_watermark": 142.67,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "WOCKPHARMA": {
+      "symbol": "WOCKPHARMA",
+      "security_id": "7506",
+      "first_seen": "2026-09-04T12:33:19.487195",
+      "last_seen": "2026-09-04T12:33:19.487195",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:33:19.487195",
+          "ltp": 2073.8,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.2948597852133306,
+          "momentum_5m": 0.46943812611914826,
+          "atr": 10.937500000000007
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        2073.8
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 2073.8,
+      "low_watermark": 2073.8,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "IONEXCHANG": {
+      "symbol": "IONEXCHANG",
+      "security_id": "1630",
+      "first_seen": "2026-09-04T12:49:22.063334",
+      "last_seen": "2026-09-04T13:37:50.916326",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:49:22.063334",
+          "ltp": 401.0,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 4.261872071748442,
+          "momentum_5m": 0.049906425452284076,
+          "atr": 1.615116279069763
+        },
+        {
+          "time": "2026-09-04T13:21:46.885411",
+          "ltp": 406.55,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.888332362916365,
+          "momentum_5m": -0.04919444102816639,
+          "atr": 1.6809999999999945
+        },
+        {
+          "time": "2026-09-04T13:37:50.916326",
+          "ltp": 409.35,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.1174282551792611,
+          "momentum_5m": 0.5028823745860445,
+          "atr": 1.8150943396226373
+        }
+      ],
+      "observation_count": 3,
+      "price_history": [
+        401.0,
+        406.55,
+        409.35
+      ],
+      "volume_history": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "high_watermark": 409.35,
+      "low_watermark": 401.0,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "AFFLE": {
+      "symbol": "AFFLE",
+      "security_id": "11343",
+      "first_seen": "2026-09-04T12:49:22.565362",
+      "last_seen": "2026-09-04T14:26:05.847403",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:49:22.565362",
+          "ltp": 1609.6,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 4.327319047831596,
+          "momentum_5m": 0.5558678408594142,
+          "atr": 8.544186046511648
+        },
+        {
+          "time": "2026-09-04T13:05:42.364721",
+          "ltp": 1624.3,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 8.276039317156881,
+          "momentum_5m": 0.6385616862988108,
+          "atr": 8.776086956521755
+        },
+        {
+          "time": "2026-09-04T14:26:05.847403",
+          "ltp": 1614.1,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.3181073114563517,
+          "momentum_5m": 0.4365722838967301,
+          "atr": 10.163492063492077
+        }
+      ],
+      "observation_count": 3,
+      "price_history": [
+        1609.6,
+        1624.3,
+        1614.1
+      ],
+      "volume_history": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "high_watermark": 1624.3,
+      "low_watermark": 1609.6,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_ENTRY_CONFIRMATION_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "LICHSGFIN": {
+      "symbol": "LICHSGFIN",
+      "security_id": "1997",
+      "first_seen": "2026-09-04T12:49:23.063417",
+      "last_seen": "2026-09-04T12:49:23.063417",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:49:23.063417",
+          "ltp": 575.05,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 2.16023333102541,
+          "momentum_5m": 0.5684302579798794,
+          "atr": 2.154651162790708
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        575.05
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 575.05,
+      "low_watermark": 575.05,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_SETUP_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "TATACAP": {
+      "symbol": "TATACAP",
+      "security_id": "759265",
+      "first_seen": "2026-09-04T12:49:23.569706",
+      "last_seen": "2026-09-04T12:49:23.569706",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:49:23.569706",
+          "ltp": 376.5,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 10.208186427588059,
+          "momentum_5m": 0.6557815845824377,
+          "atr": 0.7500000000000013
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        376.5
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 376.5,
+      "low_watermark": 376.5,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "SCHNEIDER": {
+      "symbol": "SCHNEIDER",
+      "security_id": "31234",
+      "first_seen": "2026-09-04T12:49:24.065648",
+      "last_seen": "2026-09-04T14:10:01.811906",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:49:24.065648",
+          "ltp": 1210.9,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 3.135017914388082,
+          "momentum_5m": 0.6234413965087171,
+          "atr": 3.313953488372104
+        },
+        {
+          "time": "2026-09-04T14:10:01.811906",
+          "ltp": 1230.1,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 8.745366486425514,
+          "momentum_5m": 0.203748981255103,
+          "atr": 3.7118644067796693
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        1210.9,
+        1230.1
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 1230.1,
+      "low_watermark": 1210.9,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "AETHER": {
+      "symbol": "AETHER",
+      "security_id": "9810",
+      "first_seen": "2026-09-04T12:49:24.567135",
+      "last_seen": "2026-09-04T12:49:24.567135",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T12:49:24.567135",
+          "ltp": 1633.3,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 9.58325774792862,
+          "momentum_5m": -0.5797985962770813,
+          "atr": 4.523255813953484
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        1633.3
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 1633.3,
+      "low_watermark": 1633.3,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_ENTRY_CONFIRMATION_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "BALKRISIND": {
+      "symbol": "BALKRISIND",
+      "security_id": "335",
+      "first_seen": "2026-09-04T13:05:42.859788",
+      "last_seen": "2026-09-04T13:05:42.859788",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:05:42.859788",
+          "ltp": 2266.2,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 3.0826490222721095,
+          "momentum_5m": -0.2858902181562262,
+          "atr": 7.0456521739131
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        2266.2
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 2266.2,
+      "low_watermark": 2266.2,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "DISCOVERY_SCORE_TOO_LOW",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "EXICOM": {
+      "symbol": "EXICOM",
+      "security_id": "22947",
+      "first_seen": "2026-09-04T13:05:43.363986",
+      "last_seen": "2026-09-04T13:05:43.363986",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:05:43.363986",
+          "ltp": 176.45,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.4817392544980799,
+          "momentum_5m": 1.3409742120343848,
+          "atr": 1.2400000000000004
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        176.45
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 176.45,
+      "low_watermark": 176.45,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_VOLUME_CONFIRMATION_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "VIPIND": {
+      "symbol": "VIPIND",
+      "security_id": "3703",
+      "first_seen": "2026-09-04T13:05:43.861796",
+      "last_seen": "2026-09-04T13:37:51.924599",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:05:43.861796",
+          "ltp": 315.85,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 31.279109841104905,
+          "momentum_5m": 0.3982159923542561,
+          "atr": 0.8326086956521754
+        },
+        {
+          "time": "2026-09-04T13:37:51.924599",
+          "ltp": 315.55,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 2.559224576967307,
+          "momentum_5m": 0.4595879556259952,
+          "atr": 1.002830188679246
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        315.85,
+        315.55
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 315.85,
+      "low_watermark": 315.55,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_ENTRY_CONFIRMATION_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "BRIGADE": {
+      "symbol": "BRIGADE",
+      "security_id": "15184",
+      "first_seen": "2026-09-04T13:05:44.366421",
+      "last_seen": "2026-09-04T13:37:49.913421",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:05:44.366421",
+          "ltp": 693.05,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.2746252683637729,
+          "momentum_5m": -1.2809564474807855,
+          "atr": 4.675000000000004
+        },
+        {
+          "time": "2026-09-04T13:37:49.913421",
+          "ltp": 687.35,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.8256208179630916,
+          "momentum_5m": -0.6565182887237508,
+          "atr": 4.42169811320755
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        693.05,
+        687.35
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 693.05,
+      "low_watermark": 687.35,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_SETUP_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "IIFL": {
+      "symbol": "IIFL",
+      "security_id": "11809",
+      "first_seen": "2026-09-04T13:37:49.411062",
+      "last_seen": "2026-09-04T13:37:49.411062",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:37:49.411062",
+          "ltp": 657.7,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 3.148841641331989,
+          "momentum_5m": 0.45791040219798074,
+          "atr": 1.8896226415094446
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        657.7
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 657.7,
+      "low_watermark": 657.7,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "WELSPUNLIV": {
+      "symbol": "WELSPUNLIV",
+      "security_id": "11253",
+      "first_seen": "2026-09-04T13:37:50.415562",
+      "last_seen": "2026-09-04T13:37:50.415562",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:37:50.415562",
+          "ltp": 207.6,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.2407803414940808,
+          "momentum_5m": 0.3917017263890932,
+          "atr": 0.8503773584905643
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        207.6
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 207.6,
+      "low_watermark": 207.6,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_ENTRY_CONFIRMATION_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "RGL": {
+      "symbol": "RGL",
+      "security_id": "15129",
+      "first_seen": "2026-09-04T13:37:51.421075",
+      "last_seen": "2026-09-04T13:53:58.174419",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:37:51.421075",
+          "ltp": 147.98,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.9971925803836995,
+          "momentum_5m": 0.5361020629750302,
+          "atr": 0.9139622641509455
+        },
+        {
+          "time": "2026-09-04T13:53:58.174419",
+          "ltp": 148.95,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.802446289737447,
+          "momentum_5m": 0.8579342025265113,
+          "atr": 0.9273214285714311
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        147.98,
+        148.95
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 148.95,
+      "low_watermark": 147.98,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "HIKAL": {
+      "symbol": "HIKAL",
+      "security_id": "9668",
+      "first_seen": "2026-09-04T13:37:52.420104",
+      "last_seen": "2026-09-04T13:37:52.420104",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:37:52.420104",
+          "ltp": 225.6,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.8445178691840863,
+          "momentum_5m": -0.43670048522275184,
+          "atr": 1.6050943396226425
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        225.6
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 225.6,
+      "low_watermark": 225.6,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_ENTRY_CONFIRMATION_NOT_READY",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "TATASTEEL": {
+      "symbol": "TATASTEEL",
+      "security_id": "3499",
+      "first_seen": "2026-09-04T13:53:55.176956",
+      "last_seen": "2026-09-04T13:53:55.176956",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:53:55.176956",
+          "ltp": 188.83,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 3.0654225125234245,
+          "momentum_5m": -0.10053441981057176,
+          "atr": 0.37892857142856934
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        188.83
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 188.83,
+      "low_watermark": 188.83,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "HEG": {
+      "symbol": "HEG",
+      "security_id": "1336",
+      "first_seen": "2026-09-04T13:53:55.671775",
+      "last_seen": "2026-09-04T14:10:01.338303",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:53:55.671775",
+          "ltp": 725.4,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 4.419245776554928,
+          "momentum_5m": 0.6511950121233179,
+          "atr": 2.4544642857142907
+        },
+        {
+          "time": "2026-09-04T14:10:01.338303",
+          "ltp": 732.9,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.351059608015331,
+          "momentum_5m": 0.1777170198222766,
+          "atr": 2.6228813559322073
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        725.4,
+        732.9
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 732.9,
+      "low_watermark": 725.4,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_VOLUME_CONFIRMATION_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "KNRCON": {
+      "symbol": "KNRCON",
+      "security_id": "15283",
+      "first_seen": "2026-09-04T13:53:56.170190",
+      "last_seen": "2026-09-04T14:10:02.315546",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:53:56.170190",
+          "ltp": 123.07,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 6.065525750660302,
+          "momentum_5m": 0.8358600344177569,
+          "atr": 0.44089285714285786
+        },
+        {
+          "time": "2026-09-04T14:10:02.315546",
+          "ltp": 123.53,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.5151999573334531,
+          "momentum_5m": 0.19459985405010372,
+          "atr": 0.4547457627118651
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        123.07,
+        123.53
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 123.53,
+      "low_watermark": 123.07,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "STRATEGY_VOLUME_CONFIRMATION_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "APLAPOLLO": {
+      "symbol": "APLAPOLLO",
+      "security_id": "25780",
+      "first_seen": "2026-09-04T13:53:56.679815",
+      "last_seen": "2026-09-04T13:53:56.679815",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:53:56.679815",
+          "ltp": 2240.0,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 2.5718353429184098,
+          "momentum_5m": -0.3954149635685078,
+          "atr": 6.955357142857151
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        2240.0
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 2240.0,
+      "low_watermark": 2240.0,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "MAITHANALL": {
+      "symbol": "MAITHANALL",
+      "security_id": "24538",
+      "first_seen": "2026-09-04T13:53:57.673393",
+      "last_seen": "2026-09-04T13:53:57.673393",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T13:53:57.673393",
+          "ltp": 1098.0,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.940501472294102,
+          "momentum_5m": 0.43911810447352373,
+          "atr": 6.138392857142869
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        1098.0
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 1098.0,
+      "low_watermark": 1098.0,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "MAHSEAMLES": {
+      "symbol": "MAHSEAMLES",
+      "security_id": "2088",
+      "first_seen": "2026-09-04T14:10:00.808823",
+      "last_seen": "2026-09-04T14:26:05.355454",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T14:10:00.808823",
+          "ltp": 673.8,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 17.130539181436177,
+          "momentum_5m": 1.2848448418363523,
+          "atr": 1.596610169491534
+        },
+        {
+          "time": "2026-09-04T14:26:05.355454",
+          "ltp": 688.0,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 0.4205485825150459,
+          "momentum_5m": 0.029069767441858296,
+          "atr": 1.8857142857142941
+        }
+      ],
+      "observation_count": 2,
+      "price_history": [
+        673.8,
+        688.0
+      ],
+      "volume_history": [
+        0.0,
+        0.0
+      ],
+      "high_watermark": 688.0,
+      "low_watermark": 673.8,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    },
+    "SWIGGY": {
+      "symbol": "SWIGGY",
+      "security_id": "27066",
+      "first_seen": "2026-09-04T14:42:08.334428",
+      "last_seen": "2026-09-04T14:42:08.334428",
+      "side": "LONG",
+      "breakout_level": 0.0,
+      "observations": [
+        {
+          "time": "2026-09-04T14:42:08.334428",
+          "ltp": 283.8,
+          "volume": 0.0,
+          "valid_candles": 0,
+          "rvol": 1.0347379712641334,
+          "momentum_5m": 0.3355704697986628,
+          "atr": 1.2166666666666626
+        }
+      ],
+      "observation_count": 1,
+      "price_history": [
+        283.8
+      ],
+      "volume_history": [
+        0.0
+      ],
+      "high_watermark": 283.8,
+      "low_watermark": 283.8,
+      "current_stage": "ACCUMULATING",
+      "score": null,
+      "timing_score": null,
+      "base_score": null,
+      "move_stage": null,
+      "entry_type": null,
+      "position_pct": 1.0,
+      "v10r_decision": "WATCH",
+      "v853_decision": "",
+      "final_action": "WATCH",
+      "veto_reason": "REMAINING_EDGE_INSUFFICIENT",
+      "invalidated": false,
+      "invalidation_reason": "",
+      "fast_tracked": false
+    }
+  }
+}

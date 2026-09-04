@@ -1,0 +1,150 @@
+{
+  "date": "2026-09-04",
+  "time": "16:15:36",
+  "rbi_context": {
+    "upcoming_policy": "None",
+    "days_to_policy": null,
+    "rate_sensitive_sectors": [
+      "BANK",
+      "NBFC",
+      "HOUSING",
+      "AUTO",
+      "REALTY",
+      "INFRA"
+    ],
+    "is_policy_week": false,
+    "rbi_bonus": 0
+  },
+  "results": [
+    {
+      "ticker": "ABDL",
+      "catalyst_score": 5,
+      "earnings_bonus": 0,
+      "analyst_bonus": 5,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": null,
+      "days_to_earnings": null,
+      "recommendation": "strong_buy",
+      "signal": "BUY"
+    },
+    {
+      "ticker": "ADANIENT",
+      "catalyst_score": 5,
+      "earnings_bonus": 0,
+      "analyst_bonus": 5,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": "[datetime.date(2026, 10, 28)]",
+      "days_to_earnings": null,
+      "recommendation": "strong_buy",
+      "signal": "BUY"
+    },
+    {
+      "ticker": "ADANIGREEN",
+      "catalyst_score": 5,
+      "earnings_bonus": 0,
+      "analyst_bonus": 5,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": "[datetime.date(2026, 10, 21)]",
+      "days_to_earnings": null,
+      "recommendation": "buy",
+      "signal": "BUY"
+    },
+    {
+      "ticker": "ADANIPORTS",
+      "catalyst_score": 5,
+      "earnings_bonus": 0,
+      "analyst_bonus": 5,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": "[datetime.date(2026, 11, 3)]",
+      "days_to_earnings": null,
+      "recommendation": "strong_buy",
+      "signal": "BUY"
+    },
+    {
+      "ticker": "ABFRL",
+      "catalyst_score": 0,
+      "earnings_bonus": 0,
+      "analyst_bonus": 0,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": "[datetime.date(2026, 11, 4)]",
+      "days_to_earnings": null,
+      "recommendation": "hold",
+      "signal": "NEUTRAL"
+    },
+    {
+      "ticker": "ABINFRA",
+      "catalyst_score": 0,
+      "earnings_bonus": 0,
+      "analyst_bonus": 0,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": null,
+      "days_to_earnings": null,
+      "recommendation": "none",
+      "signal": "NEUTRAL"
+    },
+    {
+      "ticker": "ABMKNO",
+      "catalyst_score": 0,
+      "earnings_bonus": 0,
+      "analyst_bonus": 0,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": null,
+      "days_to_earnings": null,
+      "recommendation": "none",
+      "signal": "NEUTRAL"
+    },
+    {
+      "ticker": "ACC",
+      "catalyst_score": 0,
+      "earnings_bonus": 0,
+      "analyst_bonus": 0,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": "[datetime.date(2026, 10, 30)]",
+      "days_to_earnings": null,
+      "recommendation": "hold",
+      "signal": "NEUTRAL"
+    },
+    {
+      "ticker": "ACCURACY",
+      "catalyst_score": 0,
+      "earnings_bonus": 0,
+      "analyst_bonus": 0,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": null,
+      "days_to_earnings": null,
+      "recommendation": "none",
+      "signal": "NEUTRAL"
+    },
+    {
+      "ticker": "ADANIENSOL",
+      "catalyst_score": 0,
+      "earnings_bonus": 0,
+      "analyst_bonus": 0,
+      "sentiment_score": 0,
+      "rbi_bonus": 0,
+      "sentiment_reasoning": "API error: 404",
+      "earnings_date": "[datetime.date(2026, 10, 29)]",
+      "days_to_earnings": null,
+      "recommendation": "none",
+      "signal": "NEUTRAL"
+    }
+  ]
+}

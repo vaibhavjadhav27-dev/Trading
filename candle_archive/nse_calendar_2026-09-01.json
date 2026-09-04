@@ -1,0 +1,69 @@
+{
+  "date": "2026-09-01",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "RGL",
+      "company": "Renaissance Global Limited",
+      "desc": "Acquisition",
+      "an_dt": "01-Sep-2026 18:58:12",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "BANG",
+      "company": "Bang Overseas Limited",
+      "desc": "Copy of Newspaper Publication",
+      "an_dt": "01-Sep-2026 18:57:04",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "VOLTAS",
+      "company": "Voltas Limited",
+      "desc": "Pendency of Litigation(s)/dispute(s) or the outcome impacting the Company",
+      "an_dt": "01-Sep-2026 18:53:28",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "company": "ICICI Bank Limited",
+      "desc": "Credit Rating",
+      "an_dt": "01-Sep-2026 18:53:01",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "company": "Bajaj Finance Limited",
+      "desc": "Address Change",
+      "an_dt": "01-Sep-2026 18:49:56",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "SUNTECK",
+      "company": "Sunteck Realty Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "01-Sep-2026 18:47:25",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "CANBK",
+      "company": "Canara Bank",
+      "purpose": "Fund Raising",
+      "date": "03-Sep-2026"
+    },
+    {
+      "symbol": "UNIINFO",
+      "company": "Uniinfo Telecom Services Limited",
+      "purpose": "Other business matters",
+      "date": "04-Sep-2026"
+    },
+    {
+      "symbol": "PNBHOUSING",
+      "company": "PNB Housing Finance Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "07-Sep-2026"
+    }
+  ]
+}

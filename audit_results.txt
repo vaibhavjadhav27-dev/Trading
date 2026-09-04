@@ -1,0 +1,87 @@
+run_full_audit.sh: line 5: $'\r': command not found
+run_full_audit.sh: line 6: cd: $'/home/ubuntu/trading-bot\r': No such file or directory
+================================================================
+L1: CODE PATCHES — verifying all today's changes
+================================================================
+run_full_audit.sh: line 10: $'\r': command not found
+
+--- short_live.py ---
+REGIME_GATES dict: 4
+✅
+run_full_audit.sh: line 15: $'\r': command not found
+pick_side sector_boost params: 2
+✅
+run_full_audit.sh: line 18: $'\r': command not found
+size_position 5X tier: 1
+✅
+run_full_audit.sh: line 21: $'\r': command not found
+size_position 4X tier: 1
+✅
+run_full_audit.sh: line 24: $'\r': command not found
+size_position 3X tier: 1
+✅
+run_full_audit.sh: line 27: $'\r': command not found
+Old 4.5X tier GONE: ✅
+run_full_audit.sh: line 30: $'\r': command not found
+profit_lock_floor 1.10->1.00: 1
+✅
+run_full_audit.sh: line 33: $'\r': command not found
+Old 0.60->0.55 GONE: ✅
+run_full_audit.sh: line 36: $'\r': command not found
+
+--- patch_integrate.py ---
+DH-906 SL fix (_sl_anchor): 4
+✅
+run_full_audit.sh: line 41: $'\r': command not found
+Live LTP at entry (_ltp_live): 0
+❌ MISSING
+run_full_audit.sh: line 44: $'\r': command not found
+Regime passed to size_position: 2
+✅
+run_full_audit.sh: line 47: $'\r': command not found
+FLOOR_HARD_OVERRIDE: 1
+✅
+run_full_audit.sh: line 50: $'\r': command not found
+check_and_kill_dead_trade GONE: ❌ STILL PRESENT
+run_full_audit.sh: line 53: $'\r': command not found
+
+--- trading_bot.py ---
+import orb_rescan: 1
+✅
+run_full_audit.sh: line 58: $'\r': command not found
+orb_rescan.persist_balance: 1
+✅
+run_full_audit.sh: line 61: $'\r': command not found
+orb_rescan.trigger_post_orb: 1
+✅
+run_full_audit.sh: line 64: $'\r': command not found
+is_entry_allowed guard: 1
+✅
+run_full_audit.sh: line 67: $'\r': command not found
+_to_decimal helper: 7
+✅
+run_full_audit.sh: line 70: $'\r': command not found
+scan_for_breakdown uses _short_candidates: 2
+✅
+run_full_audit.sh: line 73: $'\r': command not found
+Dead trade GONE from trading_bot: ✅
+run_full_audit.sh: line 76: $'\r': command not found
+
+--- orb_rescan.py ---
+Trigger at 04:15 UTC (09:45 IST): 1
+✅
+run_full_audit.sh: line 81: $'\r': command not found
+is_entry_allowed function: 1
+✅
+run_full_audit.sh: line 84: $'\r': command not found
+run_candle_fallback function: 1
+✅
+run_full_audit.sh: line 87: $'\r': command not found
+
+================================================================
+L2: DEPENDENCY CHAIN — import dry-run
+================================================================
+
+--- Syntax check all patched files ---
+run_full_audit.sh: line 94: syntax error near unexpected token `$'do\r''
+run_full_audit.sh: line 94: `for f in short_live.py patch_integrate.py trading_bot.py orb_rescan.py; do'

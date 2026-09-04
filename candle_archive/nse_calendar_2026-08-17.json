@@ -1,0 +1,63 @@
+{
+  "date": "2026-08-17",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "ADANIPORTS",
+      "company": "Adani Ports and Special Economic Zone Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "17-Aug-2026 18:58:33",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "VERANDA",
+      "company": "Veranda Learning Solutions Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "17-Aug-2026 18:55:45",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "BATAINDIA",
+      "company": "Bata India Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "17-Aug-2026 18:55:29",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TDPOWERSYS",
+      "company": "TD Power Systems Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "17-Aug-2026 18:53:46",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "KOTAKBANK",
+      "company": "Kotak Mahindra Bank Limited",
+      "desc": "ESOP/ESOS/ESPS",
+      "an_dt": "17-Aug-2026 18:51:07",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "MANAPPURAM",
+      "company": "Manappuram Finance Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "17-Aug-2026 18:50:19",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "BALKRISIND",
+      "company": "Balkrishna Industries Limited",
+      "purpose": "Fund Raising",
+      "date": "18-Aug-2026"
+    },
+    {
+      "symbol": "BPCL",
+      "company": "Bharat Petroleum Corporation Limited",
+      "purpose": "Fund Raising",
+      "date": "18-Aug-2026"
+    }
+  ]
+}

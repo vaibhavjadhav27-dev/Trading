@@ -1,0 +1,42 @@
+{
+  "date": "2026-08-31",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "EPACKPEB",
+      "company": "EPack Prefab Technologies Limited",
+      "desc": "General Updates",
+      "an_dt": "31-Aug-2026 18:57:22",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "KIRIINDUS",
+      "company": "Kiri Industries Limited",
+      "desc": "Preferential issue",
+      "an_dt": "31-Aug-2026 18:50:41",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "PVRINOX",
+      "company": "PVR INOX Limited",
+      "desc": "Record Date",
+      "an_dt": "31-Aug-2026 18:47:42",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "CANBK",
+      "company": "Canara Bank",
+      "purpose": "Fund Raising",
+      "date": "03-Sep-2026"
+    },
+    {
+      "symbol": "PNBHOUSING",
+      "company": "PNB Housing Finance Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "07-Sep-2026"
+    }
+  ]
+}

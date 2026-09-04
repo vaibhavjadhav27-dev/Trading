@@ -1,0 +1,19 @@
+{
+  "trade": {
+    "symbol": "FSL",
+    "security_id": "14304",
+    "entry_price": "330.4",
+    "qty": "155",
+    "sl": "320.06",
+    "r_value": "10.34",
+    "max_price": "330.4",
+    "trailing_sl": "320.06",
+    "phase": "INITIAL",
+    "score": "1.5833",
+    "tier": "CURATED",
+    "entry_time": "2026-08-03T14:41:31.422331",
+    "order_id": "34126080348703",
+    "expected_entry": "330.4",
+    "entry_slippage": "0.0"
+  }
+}

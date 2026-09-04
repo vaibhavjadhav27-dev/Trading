@@ -1,0 +1,46 @@
+{
+  "date": "2026-09-03",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "PIDILITIND",
+      "company": "Pidilite Industries Limited",
+      "desc": "General Updates",
+      "an_dt": "03-Sep-2026 18:52:54",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "UNIINFO",
+      "company": "Uniinfo Telecom Services Limited",
+      "purpose": "Other business matters",
+      "date": "04-Sep-2026"
+    },
+    {
+      "symbol": "OLAELEC",
+      "company": "Ola Electric Mobility Limited",
+      "purpose": "Fund Raising",
+      "date": "05-Sep-2026"
+    },
+    {
+      "symbol": "PNBHOUSING",
+      "company": "PNB Housing Finance Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "07-Sep-2026"
+    },
+    {
+      "symbol": "RBLBANK",
+      "company": "RBL Bank Limited",
+      "purpose": "Fund Raising",
+      "date": "07-Sep-2026"
+    },
+    {
+      "symbol": "RAYMOND",
+      "company": "Raymond Limited",
+      "purpose": "Fund Raising",
+      "date": "08-Sep-2026"
+    }
+  ]
+}

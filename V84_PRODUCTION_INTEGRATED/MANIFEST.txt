@@ -1,0 +1,10 @@
+V854_UNIFIED_PATCH.py
+V854_UNIFIED_README.md
+V85_1_PATCH_reference.py
+__pycache__
+test_v854_unified.py
+trading_bot_v84_v854.diff
+trading_bot_v84_v854.py
+v82_dhan_gateway_v854.diff
+v82_dhan_gateway_v854.py
+v853_profit_engine_patch_reference.py

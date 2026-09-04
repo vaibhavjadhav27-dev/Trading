@@ -1,0 +1,14 @@
+{
+  "trade": {
+    "exit": {
+      "symbol": "BLS",
+      "side": "SHORT",
+      "qty": 216,
+      "entry": 239.42,
+      "exit": 241.6,
+      "pnl_pct": -0.9105337899924848,
+      "reason": "SOFTWARE_SL",
+      "exit_time": "2026-08-24T13:13:03.383037"
+    }
+  }
+}

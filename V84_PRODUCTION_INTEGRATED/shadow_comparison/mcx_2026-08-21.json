@@ -1,0 +1,19 @@
+{
+  "date": "2026-08-21",
+  "orbs": {
+    "NATGASMINI": {
+      "high": 264.4,
+      "low": 263.3,
+      "current": 266.3,
+      "sid": "561497"
+    },
+    "GOLDPETAL": {
+      "high": 15920.0,
+      "low": 15864.0,
+      "current": 16061.0,
+      "sid": "562056"
+    }
+  },
+  "signals": [],
+  "total_signals": 0
+}

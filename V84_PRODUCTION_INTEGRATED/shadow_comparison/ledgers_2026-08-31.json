@@ -1,0 +1,35 @@
+{
+  "NSE_INTRADAY": {
+    "engine": "NSE_INTRADAY",
+    "starting_capital": 91927.0,
+    "cash": 91927.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "fees": 0.0,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0
+  },
+  "MCX_SHADOW": {
+    "engine": "MCX_SHADOW",
+    "starting_capital": 91927.0,
+    "cash": 91927.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "fees": 0.0,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0
+  },
+  "SWING_SHADOW": {
+    "engine": "SWING_SHADOW",
+    "starting_capital": 91927.0,
+    "cash": 91927.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "fees": 0.0,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0
+  }
+}

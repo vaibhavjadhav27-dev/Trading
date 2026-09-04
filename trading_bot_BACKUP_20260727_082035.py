@@ -1,0 +1,2158 @@
+#!/usr/bin/env python3
+"""
+Trading Bot v6.1 - Complete Production Orchestrator
+"""
+import os
+import sys
+import time
+import json
+import uuid
+import logging
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+
+import requests
+import pandas as pd
+import numpy as np
+import boto3
+from botocore.exceptions import ClientError
+
+import config
+# ws_feed disabled - using ws_engine
+from candidate_logger import CandidateLogger, MFEMAETracker, TimingProfiler
+import indicators
+from shortlist_emailer import build_shortlist_email, collect_shortlist_data
+from secrets_manager import get_parameter, get_dhan_token, get_dhan_client_id, get_ses_sender, get_ses_recipient
+from ws_ltp_scanner import get_bulk_ltp
+from rs_scorer import calculate_rs_scores, get_rs_bonus
+from clv_scorer import get_clv_scores, get_clv_bonus
+from peak_detector import PeakDetector
+import trade_journal
+from fno_ban_check import is_stock_safe, get_fno_ban_list
+from vix_adaptive import get_adaptive_filters, get_vix_scale
+from smart_sizing import calculate_safe_qty
+from sector_rotation import is_sector_eligible
+from smart_exit_v3 import SmartExitV3
+
+
+def compute_time_adjusted_rvol(today_volume, avg_daily_volume, minutes_since_open):
+    """Compute RVOL adjusted for time of day."""
+    if minutes_since_open <= 0 or avg_daily_volume <= 0:
+        return 1.0
+    if minutes_since_open <= 15:
+        expected_fraction = 0.175
+    elif minutes_since_open <= 30:
+        expected_fraction = 0.30
+    elif minutes_since_open <= 60:
+        expected_fraction = 0.45
+    elif minutes_since_open <= 120:
+        expected_fraction = 0.65
+    else:
+        expected_fraction = minutes_since_open / 375.0
+    expected_volume = avg_daily_volume * expected_fraction
+    if expected_volume <= 0:
+        return 1.0
+    return today_volume / expected_volume
+
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+log = logging.getLogger('TradingBot')
+
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+def now_ist():
+    return datetime.utcnow() + IST_OFFSET
+
+def time_str(dt=None):
+    if dt is None:
+        dt = now_ist()
+    return dt.strftime('%H:%M:%S')
+
+def ist_time(hour, minute):
+    today = now_ist().date()
+    return datetime(today.year, today.month, today.day, hour, minute)
+
+# ═══ RATE LIMITER ═══
+class RateLimiter:
+    def __init__(self, max_per_second=4):
+        self.min_interval = 1.0 / max_per_second
+        self.last_call = 0
+        self.lock = Lock()
+    def wait(self):
+        with self.lock:
+            elapsed = time.time() - self.last_call
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            self.last_call = time.time()
+
+rate_limiter = RateLimiter(max_per_second=8)
+
+# ═══ DHAN API CLIENT ═══
+class DhanClient:
+    BASE_URL = "https://api.dhan.co/v2"
+
+    def __init__(self):
+        self.token = get_dhan_token()
+        self.client_id = get_dhan_client_id()
+        self.headers = {"Content-Type": "application/json", "access-token": self.token}
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+
+
+        # Load prev_close cache at init
+        self._prev_closes = {}
+        self.market_regime = "NORMAL"  # default until select_candidates runs
+        try:
+            import json as _json
+            with open("prev_close_cache.json", "r") as _cf:
+                _cd = _json.load(_cf)
+            for _k, _v in _cd.get("data", {}).items():
+                if isinstance(_v, (int, float)):
+                    self._prev_closes[str(_k)] = float(_v)
+                elif isinstance(_v, dict):
+                    self._prev_closes[str(_k)] = float(_v.get("close", _v.get("prev_close", 0)))
+            log.info(f"Cache loaded in __init__: {len(self._prev_closes)} stocks")
+        except Exception as _e:
+            log.warning(f"Cache load failed in __init__: {_e}")
+        # Validate cache freshness
+        from datetime import timedelta as _td
+        from datetime import date, timedelta as _td
+        _expected = date.today() - _td(days=1)
+        while _expected.weekday() >= 5:
+            _expected -= _td(days=1)
+        if hasattr(self, "_prev_closes") and self._prev_closes:
+            log.info(f"Cache validation: expecting {_expected}")
+    def _request(self, method, endpoint, payload=None, retries=2):
+        url = f"{self.BASE_URL}{endpoint}"
+        for attempt in range(retries + 1):
+            rate_limiter.wait()
+            try:
+                if method == "GET":
+                    resp = self.session.get(url, timeout=10)
+                elif method == "DELETE":
+                    resp = self.session.delete(url, timeout=10)
+                else:
+                    resp = self.session.post(url, json=payload, timeout=10)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if isinstance(result, list) and len(result) == 1: result = result
+                    return result
+                elif resp.status_code == 429:
+                    log.warning(f"Rate limited (attempt {attempt+1}/{retries+1}). Sleeping 5s...")
+                    time.sleep(5)
+                elif resp.status_code == 401:
+                    log.error("Token expired!")
+                    return None
+                elif resp.status_code == 400:
+                    body = resp.text[:200]
+                    if 'DH-904' in body or 'Rate_Limit' in body:
+                        log.warning('Rate limited (DH-904). Sleeping 2s...')
+                        time.sleep(2)
+                    else:
+                        log.warning(f'API 400: {body}')
+                        return None
+                else:
+                    log.warning(f'API {resp.status_code}: {resp.text[:200]}')
+            except requests.exceptions.Timeout:
+                log.warning(f"Timeout {endpoint} (attempt {attempt+1})")
+                time.sleep(5)
+            except Exception as e:
+                log.error(f"Request error: {e}")
+                time.sleep(5)
+        return None
+
+    def get_balance(self):
+        data = self._request("GET", "/fundlimit")
+        if data and 'availabelBalance' in data:
+            return float(data['availabelBalance'])
+        if data and 'data' in data:
+            return float(data['data'].get('availabelBalance', 0))
+        return None
+
+    def get_ltp_batch(self, security_ids):
+        payload = {"NSE_EQ": [str(s) for s in security_ids]}
+        return self._request("POST", "/marketfeed/ltp", payload)
+
+    def get_ohlc_intraday(self, security_id, exchange="NSE_EQ", interval="5"):
+        payload = {
+            "securityId": str(security_id),
+            "exchangeSegment": exchange,
+            "instrument": "INDEX" if exchange == "IDX_I" else "EQUITY",
+            "interval": interval,
+            "fromDate": now_ist().strftime('%Y-%m-%d'),
+            "toDate": now_ist().strftime('%Y-%m-%d')
+        }
+        return self._request("POST", "/charts/intraday", payload)
+
+    def get_historical_daily(self, security_id, exchange="NSE_EQ", days=60):
+        to_date = now_ist().strftime('%Y-%m-%d')
+        from_date = (now_ist() - timedelta(days=days)).strftime('%Y-%m-%d')
+        payload = {
+            "securityId": str(security_id),
+            "exchangeSegment": exchange,
+            "instrument": "INDEX" if exchange == "IDX_I" else "EQUITY",
+            "expiryCode": 0,
+            "fromDate": from_date,
+            "toDate": to_date
+        }
+        return self._request("POST", "/charts/historical", payload)
+
+    def place_order(self, security_id, qty, price, transaction_type="BUY", order_type="LIMIT"):
+        payload = {
+            "dhanClientId": self.client_id,
+            "transactionType": transaction_type,
+            "exchangeSegment": "NSE_EQ",
+            "productType": "INTRADAY",
+            "orderType": order_type,
+            "validity": "DAY",
+            "securityId": str(security_id),
+            "quantity": int(qty),
+            "price": round(float(price), 2) if order_type == "LIMIT" else 0
+        }
+        return self._request("POST", "/orders", payload)
+
+    def get_order_status(self, order_id):
+        return self._request("GET", f"/orders/{order_id}")
+
+    def cancel_order(self, order_id):
+        return self._request("DELETE", f"/orders/{order_id}")
+
+    def get_positions(self):
+        return self._request("GET", "/positions")
+
+# ═══ DYNAMODB CLIENT ═══
+class DynamoClient:
+    def __init__(self):
+        self.dynamo = boto3.resource('dynamodb', region_name='ap-south-1')
+        self.trades = self.dynamo.Table(config.TABLE_TRADES)
+        self.state = self.dynamo.Table(config.TABLE_DAILY_STATE)
+        self.active = self.dynamo.Table(config.TABLE_ACTIVE_TRADE)
+        self.audit = self.dynamo.Table(config.TABLE_ORDER_AUDIT)
+
+    def log_order_audit(self, order_id, symbol, security_id, action, status,
+                        requested_qty, filled_qty, requested_price, filled_price,
+                        reason="", latency_ms=0):
+        try:
+            self.audit.put_item(Item={
+                'order_id': str(order_id or 'UNKNOWN'),
+                'timestamp': now_ist().isoformat(),
+                'symbol': symbol, 'security_id': int(security_id),
+                'action': action, 'status': status,
+                'requested_qty': int(requested_qty), 'filled_qty': int(filled_qty),
+                'requested_price': str(round(requested_price, 2)),
+                'filled_price': str(round(filled_price, 2)),
+                'reason': reason, 'latency_ms': int(latency_ms)
+            })
+        except Exception as e:
+            log.error(f"Audit write failed: {e}")
+
+    def save_active_trade(self, trade_data):
+        try:
+            trade_data['position_id'] = 'CURRENT'
+            self.active.put_item(Item=trade_data)
+        except Exception as e:
+            log.error(f"Active trade write failed: {e}")
+
+    def get_active_trade(self):
+        try:
+            resp = self.active.get_item(Key={'position_id': 'CURRENT'})
+            return resp.get('Item')
+        except Exception:
+            return None
+
+    def clear_active_trade(self):
+        try:
+            self.active.delete_item(Key={'position_id': 'CURRENT'})
+        except Exception as e:
+            log.error(f"Clear active failed: {e}")
+
+
+    def verify_order_fill(self, order_id, max_wait=5):
+        """P0: Verify order was actually filled by Dhan"""
+        import time as _time
+        for attempt in range(max_wait):
+            try:
+                resp = self.dhan._request("GET", f"/orders/{order_id}")
+                if resp and isinstance(resp, dict):
+                    status = resp.get("orderStatus", "UNKNOWN")
+                    if status == "TRADED":
+                        fill_price = resp.get("tradedPrice", 0)
+                        fill_qty = resp.get("filledQty", 0)
+                        log.info(f"ORDER FILLED: {order_id} @ Rs.{fill_price} x {fill_qty}")
+                        return {"status": "FILLED", "price": fill_price, "qty": fill_qty}
+                    elif status in ("REJECTED", "CANCELLED"):
+                        log.warning(f"ORDER {status}: {order_id}")
+                        return {"status": status}
+                    _time.sleep(1)
+            except Exception as e:
+                log.debug(f"Fill check attempt {attempt}: {e}")
+                _time.sleep(1)
+        log.warning(f"ORDER {order_id}: Fill not confirmed after {max_wait}s")
+        return {"status": "TIMEOUT"}
+
+    def pre_open_scan(self):
+        """P0: Scan pre-open prices at 9:08 to identify top gap-ups early"""
+        log.info("=== PRE-OPEN SCAN (9:08 AM) ===")
+        gaps = list()
+        if not hasattr(self, "ws_feed") or not self.ws_feed:
+            log.warning("WebSocket not available for pre-open scan")
+            return gaps
+        for stock in sorted_stocks[:10]:
+            sid = str(stock.get("security_id", ""))
+            ltp = self.ws_feed.get_ltp(sid)
+            prev_close = self._prev_closes.get(sid, 0)
+            if ltp and prev_close and prev_close > 0:
+                gap_pct = (ltp - prev_close) / prev_close * 100
+                if gap_pct > 0.3:
+                    gaps.append({"ticker": stock.get("ticker"), "sid": sid, "gap": round(gap_pct, 2), "ltp": ltp})
+        # MULTI-FACTOR RANKING (gap + momentum + mid-cap bonus)
+        for c in gaps:
+            g = min(abs(c.get("gap", 0)) / 3.0, 1.0) * 30
+            m = min(abs(c.get("gap", 0)) / 4.0, 1.0) * 25
+            p = c.get("ltp", 0)
+            c["rank_score"] = g + m + (15 if 100 < p < 1500 else 5)
+            c["rank_score"] += get_rs_bonus(c.get("ticker", ""), self._rs_scores)
+            c["rank_score"] += max(-2.0, min(2.0, get_clv_bonus(str(c.get("sid", "")), getattr(self, "_clv_scores", {}))))  # CLV clamped: informs, cannot dominate
+        gaps.sort(key=lambda x: -x.get("rank_score", 0))
+        log.info(f"Pre-open scan: {len(gaps)} stocks with positive gap")
+        for g in gaps[:10]:
+            log.info(f"  {g.get("ticker", "?"):<12} Gap: +{g.get("gap", 0):.2f}%")
+        return gaps
+
+    def check_depth_at_breakout(self, security_id):
+        """P0: Check market depth to confirm buying pressure at breakout"""
+        try:
+            if not hasattr(self, "ws_feed") or not self.ws_feed:
+                return {"signal": "NEUTRAL", "ratio": 1.0}
+            depth = self.ws_feed.get_depth(str(security_id))
+            if not depth:
+                return {"signal": "NEUTRAL", "ratio": 1.0}
+            buy_qty = sum(depth.get("buy_qty", list()))
+            sell_qty = sum(depth.get("sell_qty", list()))
+            ratio = buy_qty / max(1, sell_qty)
+            if ratio >= 3.0:
+                signal = "STRONG_BUY"
+            elif ratio >= 1.5:
+                signal = "BUY"
+            elif ratio <= 0.5:
+                signal = "WEAK"
+            else:
+                signal = "NEUTRAL"
+            log.debug(f"Depth {security_id}: Buy={buy_qty} Sell={sell_qty} Ratio={ratio:.2f} Signal={signal}")
+            return {"signal": signal, "ratio": round(ratio, 2)}
+        except Exception as e:
+            log.debug(f"Depth check error: {e}")
+            return {"signal": "NEUTRAL", "ratio": 1.0}
+
+    def log_trade(self, trade_data):
+        try:
+            self.trades.put_item(Item=trade_data)
+        except Exception as e:
+            log.error(f"Trade log failed: {e}")
+
+    def save_daily_state(self, state_data):
+        try:
+            state_data['date'] = now_ist().strftime('%Y-%m-%d')
+            self.state.put_item(Item=state_data)
+        except Exception as e:
+            log.error(f"State write failed: {e}")
+
+    def get_daily_state(self):
+        try:
+            resp = self.state.get_item(Key={'date': now_ist().strftime('%Y-%m-%d')})
+            return resp.get('Item')
+        except Exception:
+            return None
+
+# ═══ EMAIL NOTIFIER ═══
+class EmailNotifier:
+    def __init__(self):
+        self.ses = boto3.client('ses', region_name='ap-south-1')
+        self.sender = get_ses_sender()
+        self.recipient = get_ses_recipient()
+
+    def send(self, subject, body_html):
+        if not self.sender or not self.recipient:
+            return
+        try:
+            self.ses.send_email(
+                Source=self.sender,
+                Destination={'ToAddresses': [self.recipient]},
+                Message={
+                    'Subject': {'Data': subject},
+                    'Body': {'Html': {'Data': body_html}}
+                }
+            )
+            log.info(f"Email sent: {subject}")
+        except Exception as e:
+            log.warning(f"Email failed: {e}")
+
+    def notify_start(self, balance):
+        if config.EMAIL_ON_START:
+            self.send("🟢 Trading Bot v6.1 Started",
+                f"<h3>Bot Started at {time_str()}</h3>"
+                f"<p>Balance: ₹{balance:,.2f}</p>"
+                f"<p>Date: {now_ist().strftime('%Y-%m-%d')}</p>")
+
+    def notify_no_trade(self, reason):
+        if config.EMAIL_ON_NO_TRADE:
+            self.send("🔴 No Trade Today", f"<p>Reason: {reason}</p>")
+
+    def notify_entry(self, symbol, price, qty, sl, score, tier):
+        if config.EMAIL_ON_ENTRY:
+            self.send(f"🟢 BUY: {symbol} @ ₹{price:.2f}",
+                f"<p>Qty:{qty}, SL:₹{sl:.2f}, Score:{score:.3f}, Tier:{tier}</p>")
+
+    def notify_exit(self, symbol, entry_price, exit_price, qty, pnl, reason, r_mult):
+        if config.EMAIL_ON_EXIT:
+            emoji = "💰" if pnl > 0 else "🔴"
+            self.send(f"{emoji} EXIT: {symbol} P&L: ₹{pnl:.2f}",
+                f"<p>Entry:₹{entry_price:.2f}, Exit:₹{exit_price:.2f}, "
+                f"Qty:{qty}, R:{r_mult:.2f}, Reason:{reason}</p>")
+
+    def notify_loss_lock(self, losses):
+        if config.EMAIL_ON_LOSS_LOCK:
+            self.send(f"⚠️ {losses} Consecutive Losses — Stopped", "<p>Resuming tomorrow.</p>")
+
+    def notify_eod(self, trades, total_pnl, balance):
+        if config.EMAIL_ON_EOD_SUMMARY:
+            self.send(f"📊 EOD: {now_ist().strftime('%Y-%m-%d')}",
+                f"<p>Trades:{trades}, PnL:₹{total_pnl:.2f}, Balance:₹{balance:,.2f}</p>")
+
+    def notify_error(self, msg):
+        if config.EMAIL_ON_ERROR:
+            self.send("🚨 BOT ERROR", f"<pre>{msg}</pre>")
+
+
+    def notify_shortlist(self, candidates, funnel):
+        rows = ""
+        for c in candidates[:10]:
+            t = c.get("ticker", "?")
+            g = c.get("gap_pct", 0)
+            s = c.get("score", 0)
+            rows += "<tr><td>" + t + "</td><td>" + str(round(g,1)) + "%</td><td>" + str(round(s,2)) + "</td></tr>"
+        rej = ""
+        for k, v in funnel.items():
+            rej += "<li>" + str(k) + ": P=" + str(v.get("passed",0)) + " R=" + str(v.get("rejected",0)) + "</li>"
+        body = "<h3>Shortlisted (" + str(len(candidates)) + ")</h3>"
+        body += "<table border=1><tr><th>Stock</th><th>Gap</th><th>Score</th></tr>" + rows + "</table>"
+        body += "<h3>Filter Funnel</h3><ul>" + rej + "</ul>"
+        self.send("Morning Shortlist: " + str(len(candidates)) + " Stocks", body)
+
+# ═══ MAIN ORCHESTRATOR ═══
+class TradingBot:
+    def __init__(self):
+        log.info("═══ Trading Bot v6.1 Initializing ═══")
+        self.market_regime = "NORMAL"  # Default regime
+        self.candidate_logger = CandidateLogger()
+        self.mfe_tracker = MFEMAETracker()
+        self.profiler = TimingProfiler()
+        self.dhan = DhanClient()
+        self.token = self.dhan.token
+        self.client_id = self.dhan.client_id
+        self.dynamo = DynamoClient()
+        self.email = EmailNotifier()
+        self.watchlist = pd.read_csv('watchlist.csv').to_dict('records')
+        self.active_trade = None
+        self.no_trade_notified = False
+        self.daily_pnl = 0.0
+        self.trades_today = 0
+        self.regime = "NORMAL"
+        self.consecutive_losses = 0
+        self.orb_data = {}
+        self.candidates = []
+        # WebSocket feed for real-time prices
+        self.ws_feed = None
+        self.ws_active = False
+        self.nifty_data = {}
+
+        # Load prev_close cache from file saved at 3:35 PM
+        self._prev_closes = {}
+        try:
+            import json as _j2
+            with open("prev_close_cache.json", "r") as _cf2:
+                _cdata = _j2.load(_cf2)
+            for _sk, _sv in _cdata.get("data", {}).items():
+                if isinstance(_sv, (int, float)):
+                    self._prev_closes[str(_sk)] = float(_sv)
+                elif isinstance(_sv, dict):
+                    self._prev_closes[str(_sk)] = float(_sv.get("close", _sv.get("prev_close", 0)))
+            log.info(f"Prev_close cache: {len(self._prev_closes)} stocks loaded")
+        except Exception as _ce:
+            log.warning(f"Prev_close cache not loaded: {_ce}")
+
+    def fetch_ltp_concurrent(self, security_ids):
+        """Get LTP via intraday last candle (marketfeed/ltp is deprecated)."""
+        results = {}
+        today = now_ist().strftime("%Y-%m-%d")
+        batches = [security_ids[i:i+config.LTP_BATCH_SIZE]
+                   for i in range(0, len(security_ids), config.LTP_BATCH_SIZE)]
+
+        def fetch_single(sid):
+            rate_limiter.wait()
+            payload = {
+                "securityId": str(sid),
+                "exchangeSegment": "IDX_I" if str(sid) in ["13", "25"] else "NSE_EQ",
+                "instrument": "INDEX" if str(sid) in ["13", "25"] else "EQUITY",
+                "interval": "1",
+                "fromDate": today,
+                "toDate": today
+            }
+            resp = self.dhan._request("POST", "/charts/intraday", payload)
+            if resp and isinstance(resp, dict) and "close" in resp:
+                closes = resp["close"]
+                if closes:
+                    return (str(sid), float(closes[-1]))
+            return (str(sid), 0)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            for batch in batches:
+                futures = {executor.submit(fetch_single, sid): sid for sid in batch}
+                for future in as_completed(futures, timeout=45):
+                    try:
+                        sid, price = future.result()
+                        results[sid] = price
+                    except Exception as e:
+                        log.warning(f"LTP fetch error: {e}")
+        return results
+
+        def fetch_batch(batch):
+            payload = {"NSE_EQ": [str(s) for s in batch]}
+            return self.dhan._request("POST", "/marketfeed/ltp", payload)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {executor.submit(fetch_batch, b): b for b in batches}
+            for future in as_completed(futures, timeout=45):
+                try:
+                    data = future.result()
+                    if data and isinstance(data, dict):
+                        for k, v in data.items():
+                            if isinstance(v, dict):
+                                results[k] = float(v.get('last_price', 0))
+                            elif isinstance(v, (int, float)):
+                                results[k] = float(v)
+                except Exception as e:
+                    log.warning(f"Batch LTP error: {e}")
+        return results
+
+    def check_market_quality(self):
+        log.info("Checking market quality...")
+        nifty_hist = self.dhan.get_historical_daily('13', 'IDX_I', days=70)
+        if nifty_hist and isinstance(nifty_hist, dict):
+            candles = nifty_hist.get('data', nifty_hist)
+            if isinstance(candles, dict) and 'close' in candles:
+                closes = pd.Series([float(c) for c in candles['close']])
+            elif isinstance(candles, list):
+                closes = pd.Series([float(c.get('close', 0)) for c in candles])
+            else:
+                closes = pd.Series([])
+            if len(closes) >= 50:
+                ema50 = indicators.compute_ema(closes, 50).iloc[-1]
+                ema20 = indicators.compute_ema(closes, 20).iloc[-1]
+                last_close = closes.iloc[-1]
+                self.nifty_data['ema50'] = ema50
+                self.nifty_data['ema20'] = ema20
+                self.nifty_data['prev_close'] = last_close
+                if last_close < ema50:
+                    log.info(f"Nifty {last_close:.0f} < EMA50 {ema50:.0f} — BEARISH")
+                    return 'NO_TRADE'
+        nifty_ltp_data = self.fetch_ltp_concurrent(['13', '25'])
+        nifty_ltp = nifty_ltp_data.get('13', 0)
+        bn_ltp = nifty_ltp_data.get('25', 0)
+        self.nifty_data['ltp'] = nifty_ltp
+        log.info(f"Market: Nifty={nifty_ltp:.0f}, BankNifty={bn_ltp:.0f}")
+        nifty_intra = self.dhan.get_ohlc_intraday('13', 'IDX_I', '5')
+        nifty_vwap = 0
+        if nifty_intra:
+            candles = nifty_intra.get('data', nifty_intra)
+            if isinstance(candles, dict) and 'close' in candles:
+                df = pd.DataFrame(candles)
+            elif isinstance(candles, list):
+                df = pd.DataFrame(candles)
+            else:
+                df = pd.DataFrame()
+            if not df.empty and all(c in df.columns for c in ['high','low','close','volume']):
+                df[['high','low','close','volume']] = df[['high','low','close','volume']].astype(float)
+                nifty_vwap = indicators.compute_vwap(df).iloc[-1]
+        self.nifty_data['vwap'] = nifty_vwap
+        nifty_above = nifty_ltp > nifty_vwap if nifty_vwap > 0 else True
+        if not nifty_above:
+            log.info("Nifty below VWAP — CONSERVATIVE mode")
+            return 'CONSERVATIVE'
+        # === REGIME DETECTION ===
+        try:
+            ema20 = self.nifty_data.get("ema20", 0)
+            ema50 = self.nifty_data.get("ema50", 0)
+            last_close = self.nifty_data.get("prev_close", 0)
+            slope = (ema20 - ema50) / ema50 * 100 if ema50 > 0 else 0
+            gap_pct = (nifty_ltp - last_close) / last_close * 100 if last_close > 0 else 0
+            above50 = nifty_ltp > ema50
+            if gap_pct > 0.3 and slope > 0 and above50:
+                self.regime = "TRENDING_UP"
+            elif gap_pct < -0.3 and slope < 0 and not above50:
+                self.regime = "TRENDING_DOWN"   # strict mirror; short-bias window (above VWAP, below EMA50)
+            elif gap_pct < -0.2 or slope < -0.1:
+                self.regime = "CHOPPY"
+            else:
+                self.regime = "NORMAL"
+            log.info(f"Regime: {self.regime} (gap={gap_pct:+.2f}%, slope={slope:.3f}%, above50={above50})")
+        except Exception as e:
+            self.regime = "NORMAL"
+            log.warning(f"Regime detection failed: {e}")
+
+        log.info("Market quality: FULL ✓")
+        return 'FULL'
+
+    def select_candidates(self):
+        import signal
+        def _timeout_handler(signum, frame): raise TimeoutError("select_candidates exceeded 120s")
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(0)
+        log.info("Selecting candidates...")
+        # Initialize RS and CLV scores for ranking
+        if not hasattr(self, "_rs_scores"):
+            self._rs_scores = calculate_rs_scores(None)
+        if not hasattr(self, "_clv_scores"):
+            self._clv_scores = get_clv_scores()
+        # ROOT FIX: Never scan when market is closed
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone("Asia/Kolkata")
+        now_ist = datetime.now(ist)
+        hour = now_ist.hour + now_ist.minute / 60
+        if now_ist.weekday() >= 5 or hour < 9.25 or hour > 15.5:
+            log.warning("Market CLOSED - skipping scan")
+            return []
+        
+            # FIX: Sort by gap magnitude (highest positive gap first = most momentum)
+            # This ensures high-gap stocks are scanned first before API limits hit
+        sids = [str(s['security_id']) for s in self.watchlist]
+        ltp_data = self.fetch_ltp_concurrent(sids)
+        nifty_prev = self.nifty_data.get('prev_close', 0)
+        nifty_ltp = self.nifty_data.get('ltp', 0)
+        nifty_gap = (nifty_ltp - nifty_prev) / nifty_prev * 100 if nifty_prev > 0 else 0
+        # Fetch actual previous closes for accurate gap calculation
+        # Load prev_close from cache file (saved at 3:35 PM previous day)
+        self._prev_closes = {}
+        try:
+            import json as _json
+            with open("prev_close_cache.json", "r") as _f:
+                _cache = _json.load(_f)
+            raw = _cache.get("data", {})
+            for _sid, _val in raw.items():
+                if isinstance(_val, dict):
+                    self._prev_closes[_sid] = float(_val.get("close", 0))
+                elif isinstance(_val, (int, float)):
+                    self._prev_closes[_sid] = float(_val)
+            log.info(f"Loaded {len(self._prev_closes)} prev_closes from cache")
+        except FileNotFoundError:
+            log.warning("No prev_close_cache.json found - will fetch from API")
+        except Exception as _e:
+            log.warning(f"Cache load failed: {_e} - will fetch from API")
+        _rate_fails = 0  # Stop if too many rate limits
+        # === WEBSOCKET LTP + PREV_CLOSE (0 API calls) ===
+        stock_pairs = [(s["ticker"], s["security_id"]) for s in self.watchlist]
+        try:
+            # WebSocket with 30s hard timeout
+            import threading
+            _ltp_result = {}   # ROOT FIX: dict init (was [{}] -> spawned 4 list-guards)
+            def _ws_fetch():
+                nonlocal _ltp_result
+                try:
+                    import socket
+                    _old_timeout = socket.getdefaulttimeout()
+                    socket.setdefaulttimeout(25)
+                    try:
+                        _ltp_result = get_bulk_ltp(self.client_id, self.token, stock_pairs)
+                    except Exception as _ws_err:
+                        log.warning(f"WebSocket failed in 25s: {_ws_err}")
+                        ltp_map = {}
+                    finally:
+                        socket.setdefaulttimeout(_old_timeout)
+                except: pass
+            # WS RETRY: cold-start returns 0/552, recovers ~60s later (confirmed 2026-07-22).
+            # Retry 3x before the lossy bounded-120 REST fallback ever fires.
+            ltp_map = {}
+            for _ws_try in range(3):
+                _ltp_result = {}
+                _t = threading.Thread(target=_ws_fetch, daemon=True)
+                _t.start()
+                _t.join(timeout=30)
+                ltp_map = _ltp_result if isinstance(_ltp_result, dict) else {}
+                log.info(f"WebSocket LTP attempt {_ws_try+1}/3: {len(ltp_map)}/{len(stock_pairs)} stocks (0 API calls)")
+                if len(ltp_map) >= 0.5 * len(stock_pairs):  # >=50% coverage = good enough
+                    break
+                if _ws_try < 2:
+                    log.warning(f"WS thin ({len(ltp_map)}/{len(stock_pairs)}) - retry in 20s")
+                    time.sleep(20)
+        except Exception as e:
+            log.warning(f"WebSocket failed: {e}, falling back to REST")
+            sids = [str(s["security_id"]) for s in self.watchlist]
+            ltp_map = {}  # Skip REST all-549 (causes 14min hang)
+        
+        # Build ltp_data dict compatible with downstream code
+        ltp_data = ltp_map
+        # ROOT FIX: bounded REST fallback so a WS miss is not a dead session.
+        if not ltp_map:
+            log.warning("WebSocket returned 0 LTPs - bounded REST fallback (top 120 by prior gap)")
+            try:
+                _ranked = sorted(
+                    self.watchlist,
+                    key=lambda s: self._prev_closes.get(str(int(s["security_id"])), 0),
+                    reverse=True,
+                )[:120]
+                _sids = [str(int(s["security_id"])) for s in _ranked]
+                ltp_map = self.fetch_ltp_concurrent(_sids) or {}
+                ltp_data = ltp_map
+                log.info(f"REST fallback LTP: {len(ltp_map)} stocks (bounded to 120)")
+            except Exception as _fb:
+                log.warning(f"Bounded REST fallback failed: {_fb}")
+        else:
+            log.info("Using WebSocket LTP - REST fallback not needed")
+        # if len(ltp_map) == 0:
+        # log.info("WebSocket failed - falling back to REST LTP")
+        # sids = [str(int(s["security_id"])) for s in self.watchlist]
+        # ltp_data = self.fetch_ltp_concurrent(sids)
+        
+        nifty_prev = self.nifty_data.get("prev_close", 0)
+        nifty_ltp = self.nifty_data.get("ltp", 0)
+        nifty_gap = (nifty_ltp - nifty_prev) / nifty_prev * 100 if nifty_prev > 0 else 0
+        
+        # Prev close: use yesterday close from historical (batch, limited REST)
+        if not self._prev_closes:
+            self._prev_closes = {}
+        _rate_fails = 0
+        # OPTIMIZATION: Sort by momentum (strongest movers first)
+        if ltp_map:
+            momentum_scored = []
+            for s in self.watchlist:
+                sid = str(int(s["security_id"]))
+                ltp = ltp_map.get(sid, 0)
+                if ltp > 0 and config.PRICE_FLOOR <= ltp <= config.PRICE_CEIL_TIER1:
+                    momentum_scored.append((s, ltp))
+            sorted_stocks = [s for s, _ in sorted(momentum_scored, key=lambda pair: -pair[-1])]
+        else:
+            sorted_stocks = list(self.watchlist)
+        log.info(f"Momentum-sorted: {len(sorted_stocks)} price-eligible stocks")
+
+        for stock in sorted_stocks[:10]:
+            sid = str(int(stock["security_id"]))
+            ticker_sym = stock.get("ticker", "")
+            is_safe, safety_reason = is_stock_safe(ticker_sym)
+            if not is_safe:
+                log.debug(f"Skipped {ticker_sym}: {safety_reason}")
+                continue
+            try:
+                time.sleep(0.5)  # 2 calls/sec safe rate
+                hist = self.dhan.get_historical_daily(sid, days=5)
+                if hist:
+                    candles = hist.get("data", hist)
+                    if isinstance(candles, dict) and "close" in candles:
+                        closes = candles["close"]
+                        if len(closes) >= 2:
+                            self._prev_closes[sid] = float(closes[-2])
+                    elif isinstance(candles, list) and len(candles) >= 2:
+                        self._prev_closes[sid] = float(candles[-2].get("close", 0))
+            except Exception:
+                _rate_fails += 1
+                if _rate_fails >= 3:
+                    log.warning("Rate limit hit 3x - stopping prev_close fetch")
+                    break
+        
+
+        candidates = []
+        self.rejected_stocks = []
+        self.funnel_counts = {
+            '1. LTP Available': {'passed': 0, 'rejected': 0},
+            '2. Price Range': {'passed': 0, 'rejected': 0},
+
+            '3. Gap Filter': {'passed': 0, 'rejected': 0},
+            '4. ORB Range': {'passed': 0, 'rejected': 0},
+        }
+        for stock in self.watchlist:
+            sid = str(stock['security_id'])
+            ltp = ltp_data.get(sid, 0)
+            if ltp <= 0:
+                self.funnel_counts['1. LTP Available']['rejected'] += 1
+            self.funnel_counts['1. LTP Available']['passed'] += 1
+            if ltp < config.PRICE_FLOOR or ltp > config.PRICE_CEIL_TIER1:
+                self.funnel_counts['2. Price Range']['rejected'] += 1
+                self.rejected_stocks.append({
+                    'ticker': stock['ticker'], 'ltp': ltp, 'gap_pct': 0, 'rs': 0,
+                    'failed_filter': 'PRICE_RANGE',
+                    'detail': f'₹{ltp:.0f} outside ₹{config.PRICE_FLOOR}-₹{config.PRICE_CEIL_TIER1}',
+                    'source': 'Watchlist'
+                })
+                continue
+            self.funnel_counts['2. Price Range']['passed'] += 1
+            prev_close = self._prev_closes.get(sid, 0)
+            if not prev_close and hasattr(self, "ws_engine") and self.ws_engine:
+                prev_close = self.ws_engine.prev_close_tracker.get_prev_close(sid)
+            if not prev_close:
+                continue  # Skip: no prev_close available
+            gap_pct = (ltp - prev_close) / prev_close * 100
+            # FIX 2: Direction filter - ONLY allow positive gap (buy-side) entries
+            if getattr(config, "DIRECTION_FILTER", False):
+                min_gap_entry = getattr(config, "MIN_GAP_FOR_ENTRY", 0.0)
+                if gap_pct < min_gap_entry:
+                    self.funnel_counts.setdefault("2b. Direction", {"passed": 0, "failed": 0})
+                    self.funnel_counts["2b. Direction"]["failed"] += 1
+                    continue
+                self.funnel_counts.setdefault("2b. Direction", {"passed": 0, "failed": 0})
+                self.funnel_counts["2b. Direction"]["passed"] += 1
+            if gap_pct < config.GAP_MIN:
+                # Volume bypass: if RVOL > threshold AND price trending up, allow through
+                bypass = False
+                try:
+                    rvol_threshold = getattr(config, 'VOLUME_BYPASS_RVOL', 2.5)
+                    if hasattr(self, 'ws_feed') and self.ws_active and self.ws_feed:
+                        ohlc = self.ws_feed.get_ohlc(str(stock['security_id']))
+                        vol_now = ohlc.get('volume', 0)
+                        if vol_now > 0 and ltp > prev_close and gap_pct >= 0.5:
+                            bypass = True  # Price up + volume streaming = momentum
+                    elif gap_pct >= 0 and gap_pct < config.GAP_MIN:
+                        # REST fallback: check if price is above prev_close (direction = UP)
+                        if ltp > prev_close * 1.005:  # At least 0.2% above prev close
+                            bypass = True
+                except Exception:
+                    bypass = False
+
+                if not bypass:
+                    self.funnel_counts['3. Gap Filter']['rejected'] += 1
+                    self.rejected_stocks.append({
+                        'ticker': stock['ticker'], 'ltp': ltp, 'gap_pct': gap_pct, 'rs': 0,
+                        'failed_filter': 'GAP_TOO_LOW',
+                        'detail': f'Gap {gap_pct:.2f}% < min {config.GAP_MIN}% (no volume bypass)',
+                        'source': 'Watchlist'
+                    })
+                    continue
+                else:
+                    log.info(f"VOLUME BYPASS: {stock['ticker']} gap={gap_pct:.2f}% but price trending up")
+            self.funnel_counts['3. Gap Filter']['passed'] += 1
+            rs = gap_pct / nifty_gap if nifty_gap > 0 else gap_pct * 2
+            candidates.append({
+                'ticker': stock['ticker'], 'security_id': stock['security_id'],
+                'ltp': ltp, 'gap_pct': gap_pct, 'rs': rs,
+                'prev_close': prev_close, 'tier': 'CURATED'
+            }),
+        candidates.sort(key=lambda x: x['rs'], reverse=True)
+        # Re-rank candidates by multi-factor score
+        for c in candidates:
+            g = min(abs(c.get("gap", c.get("gap_pct", 0))) / 3.0, 1.0) * 30
+            p = c.get("ltp", 0)
+            mid_bonus = 15 if 100 < p < 1500 else 5
+            c["rank_score"] = g + mid_bonus
+        candidates.sort(key=lambda x: -x.get("rank_score", 0))
+        self.candidates = candidates[:10]
+        self._prefilter_candidates = list(self.candidates)  # snapshot before FILTERS_V2 (backtest)
+        # ===== FILTERS_V2 hook: LIVE (FILTERS_V2) or SHADOW (non-trading) =====
+        if getattr(config, "FILTERS_V2", False) or getattr(config, "SHADOW_MODE", False):
+            try:
+                import filters_v2, time as _t
+                _live = getattr(config, "FILTERS_V2", False)
+                _mode = getattr(self, "market_regime", "FULL")
+                _reg = getattr(self, "regime", "NORMAL")
+                _state = "BEARISH-DEFENSIVE" if _mode == "CONSERVATIVE" else _reg
+                def _rvol_fn(c):
+                    # bounded REST on shortlist ONLY (rate-safe)
+                    try:
+                        _sid = str(int(c["security_id"]))
+                        _t.sleep(0.3)
+                        _d = self.dhan.get_ohlc_intraday(_sid, "NSE_EQ", "5")
+                        _v = _d.get("volume") if isinstance(_d, dict) else None
+                        _vol_now = float(_v[-1]) if _v else 0
+                        _adv = filters_v2._m(c.get("ticker", "")).get("adv_20d", 0)
+                        _mins = 15  # ~9:15-9:30 window; refine with real clock if needed
+                        return compute_time_adjusted_rvol(_vol_now, _adv, _mins) if _adv else None
+                    except Exception:
+                        return None
+                _before = list(self.candidates)
+                _kept = filters_v2.apply_regime_filters(
+                    _before, _state, config, rvol_fn=_rvol_fn, force=True)
+                filters_v2.shadow_log(_state, _before, _kept, rvol_fn=_rvol_fn)
+                if _live:
+                    self.candidates = _kept
+                    log.info(f"FILTERS_V2 LIVE: state={_state} -> {len(self.candidates)} candidates")
+                else:
+                    log.info(f"FILTERS_V2 SHADOW: state={_state} -> would keep {len(_kept)}/{len(_before)} (candidates UNCHANGED)")
+            except Exception as _fe:
+                log.warning(f"FILTERS_V2 hook error -> legacy passthrough: {_fe}")
+        # ===== end FILTERS_V2 hook =====
+        log.info(f"Candidates: {len(self.candidates)} selected from {len(candidates)} passing")
+        self.email.notify_shortlist(self.candidates, self.funnel_counts)
+        # ═══ BACKTEST persist: dump shortlist for 15:45 candle saver (added 2026-07-16) ═══
+        # Non-fatal, atomic. Normalizes keys to what save_candle_data.py reads.
+        try:
+            import json as _bj, os as _bo, datetime as _bdt
+            _bdir = _bo.path.join(_bo.path.dirname(_bo.path.abspath(__file__)), "candle_archive")
+            _bo.makedirs(_bdir, exist_ok=True)
+            _bday = _bdt.date.today().isoformat()
+            _brows = []
+            _bkept_sids = {str(c.get("security_id", "")) for c in self.candidates}
+            _bsource = getattr(self, "_prefilter_candidates", None) or self.candidates
+            for _bi, _bc in enumerate(_bsource):
+                _bsid = str(_bc.get("security_id", ""))
+                _brows.append({
+                    "rank": _bi + 1,
+                    "sid": _bsid,
+                    "symbol": _bc.get("ticker"),
+                    "gap": _bc.get("gap_pct"),
+                    "rs": _bc.get("rs"),
+                    "clv": _bc.get("clv"),
+                    "score": _bc.get("rank_score"),
+                    "tier": _bc.get("tier"),
+                    "ltp": _bc.get("ltp"),
+                    "prev_close": _bc.get("prev_close"),
+                    "kept": _bsid in _bkept_sids,
+                })
+            _btmp = _bo.path.join(_bdir, f"pending_{_bday}.json.tmp")
+            _bfin = _bo.path.join(_bdir, f"pending_{_bday}.json")
+            _bctx = {
+                "market_regime": getattr(self, "market_regime", None),
+                "regime": getattr(self, "regime", None),
+                "nifty_ltp": (self.nifty_data or {}).get("ltp"),
+                "nifty_vwap": (self.nifty_data or {}).get("vwap"),
+                "nifty_prev_close": (self.nifty_data or {}).get("prev_close"),
+                "nifty_below_vwap": (
+                    (self.nifty_data or {}).get("ltp") is not None
+                    and (self.nifty_data or {}).get("vwap") is not None
+                    and (self.nifty_data or {}).get("ltp") < (self.nifty_data or {}).get("vwap")
+                ),
+            }
+            def _json_safe(o):
+                import numpy as _np
+                if isinstance(o, (bool, _np.bool_)): return bool(o)
+                if isinstance(o, _np.integer): return int(o)
+                if isinstance(o, _np.floating): return float(o)
+                raise TypeError("not serializable: %s" % type(o))
+            with open(_btmp, "w") as _bf:
+                _bj.dump({"date": _bday, "candidates": _brows, "context": _bctx}, _bf, default=_json_safe)
+            _bo.replace(_btmp, _bfin)
+            log.info(f"BACKTEST persist: wrote {len(_brows)} candidates -> {_bfin}")
+        except Exception as _bpe:
+            log.warning(f"BACKTEST persist failed (non-fatal): {_bpe}")
+        # -- candidate logging to DynamoDB for ML/analysis (wired 2026-07-20) --
+        try:
+            _cl_scan   = now_ist().strftime("%H%M")
+            _cl_date   = now_ist().strftime("%Y-%m-%d")
+            _cl_regime = getattr(self, "market_regime", None) or getattr(self, "regime", None) or "UNKNOWN"
+            _cl_kept   = {str(c.get("security_id", "")) for c in self.candidates}
+            _cl_source = getattr(self, "_prefilter_candidates", None) or self.candidates
+            for _cl_c in _cl_source:
+                _cl_sid = str(_cl_c.get("security_id", ""))
+                _cl_feat = {
+                    "scan_time": _cl_scan,
+                    "gap_pct": _cl_c.get("gap_pct", 0),
+                    "rs_score": _cl_c.get("rs", 0),
+                    "score": _cl_c.get("rank_score", 0),
+                    "tier": _cl_c.get("tier", "CURATED"),
+                    "ltp": _cl_c.get("ltp", 0),
+                    "prev_close": _cl_c.get("prev_close", 0),
+                    "sector": _cl_c.get("sector", "UNKNOWN"),
+                    "market_regime": _cl_regime,
+                    "action": "SHORTLISTED" if _cl_sid in _cl_kept else "REJECTED",
+                }
+                self.candidate_logger.log_candidate(_cl_date, _cl_c.get("ticker", "?"), _cl_feat)
+            log.info(f"CandidateLog: wrote {len(_cl_source)} candidates ({len(_cl_kept)} kept)")
+        except Exception as _cle:
+            log.warning(f"CandidateLog wiring failed (non-fatal): {_cle}")
+        return self.candidates
+
+
+    def start_websocket(self, security_ids, mode="quote"):
+        """Start WebSocket feed for real-time price streaming."""
+        try:
+            self.ws_active = False; self.ws_feed = None; return False  # per-tick WS not implemented - scan loop uses fast per-candidate REST
+            self.ws_feed.subscribe(security_ids, mode=mode)
+            if self.ws_feed.start():
+                self.ws_active = True
+                self.ws_engine = WebSocketEngine(self.ws_feed, self.watchlist)
+                self.ws_engine.start()
+                log.info(f"WebSocket streaming {len(security_ids)} instruments")
+                return True
+            else:
+                log.warning("WebSocket failed - using REST fallback")
+                self.ws_active = False
+                return False
+        except Exception as e:
+            log.error(f"WebSocket init error: {e}")
+            self.ws_active = False
+            return False
+
+    def stop_websocket(self):
+        """Stop WebSocket feed."""
+        if self.ws_feed:
+            self.ws_feed.stop()
+            self.ws_active = False
+
+    def get_live_price(self, security_id):
+        """Get price from WebSocket if available, else REST fallback."""
+        if self.ws_active and self.ws_feed and self.ws_feed.is_connected():
+            ltp = self.ws_feed.get_ltp(security_id)
+            if ltp > 0:
+                return ltp
+        # REST fallback
+        data = self.fetch_ltp_concurrent([str(security_id)])
+        return data.get(str(security_id), 0)
+
+    def record_orb(self):
+        log.info(f"Recording ORB for {len(self.candidates)} stocks...")
+        self._orb_reject_reason = {}  # ORB DIAG: sid -> NO_DATA | RANGE_OUTSIDE
+        def fetch_orb(candidate):
+            time.sleep(1.5)  # Rate limit: max 8/sec shared budget
+            data = None
+            for _attempt in range(3):  # ORB RETRY: transient empty is NOT a dead range
+                data = self.dhan.get_ohlc_intraday(str(candidate['security_id']), interval="15")
+                if data:
+                    break
+                time.sleep(4)  # backoff before retry
+            if not data:
+                self._orb_reject_reason[candidate['security_id']] = 'NO_DATA'
+            if data:
+                # Handle both formats: dict-of-lists OR list-of-dicts
+                if isinstance(data, dict) and "open" in data:
+                    opens = data["open"]
+                    highs = data["high"]
+                    lows = data["low"]
+                    candles = [{"open": o, "high": h, "low": l} for o, h, l in zip(opens, highs, lows)]
+                else:
+                    if isinstance(data, dict): data = data.get("data", data)
+                    candles = data if isinstance(data, list) else []
+                if isinstance(candles, dict) and 'high' in candles:
+                    return candidate['security_id'], {
+                        'high': float(candles['high'][-1]) if isinstance(candles['high'], list) else float(candles['high']),
+                        'low': float(candles['low'][-1]) if isinstance(candles['low'], list) else float(candles['low']),
+                        'open': float(candles['open'][0:1].pop()) if isinstance(candles['open'], list) else float(candles['open']),
+                        'close': float(candles['close'][-1]) if isinstance(candles['close'], list) else float(candles['close']),
+                        'volume': float(sum(candles['volume']) if isinstance(candles['volume'], list) else candles['volume'])
+                    }
+                elif isinstance(candles, list) and len(candles) > 0:
+                    c = candles[-1]  # Take last candle from list
+                    return candidate['security_id'], {
+                        'high': float(c.get('high', 0) if not isinstance(c.get('high'), list) else c.get('high')[-1]),
+                        'low': float(c.get('low', 0) if not isinstance(c.get('low'), list) else c.get('low')[-1]),
+                        'open': float(c.get('open', 0) if not isinstance(c.get('open'), list) else c.get('open')[-1]),
+                        'close': float(c.get('close', 0)),
+                        'volume': float(c.get('volume', 0))
+                    }
+            return candidate['security_id'], None
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(fetch_orb, c): c for c in self.candidates[:8]}
+            for future in as_completed(futures, timeout=75):  # ORB RETRY headroom
+                try:
+                    sid, orb = future.result()
+                    if orb and orb['high'] > 0:
+                        orb_range = orb['high'] - orb['low']
+                        range_pct = orb_range / orb['high'] * 100
+                        if config.ORB_MIN_RANGE_PCT <= range_pct <= config.ORB_MAX_RANGE_PCT:
+                            orb['range'] = orb_range
+                            orb['range_pct'] = range_pct
+                            self.orb_data[sid] = orb
+                        else:
+                            self._orb_reject_reason[sid] = f'RANGE_OUTSIDE ({range_pct:.2f}%)'
+                except Exception as e:
+                    log.warning(f"ORB fetch error: {e}")
+        log.info(f"ORB recorded: {len(self.orb_data)} valid ranges")
+        _nd = sum(1 for v in self._orb_reject_reason.values() if v == 'NO_DATA')
+        _ro = sum(1 for v in self._orb_reject_reason.values() if str(v).startswith('RANGE_OUTSIDE'))
+        log.info(f"ORB breakdown: {len(self.orb_data)} valid | {_nd} NO_DATA (fetch bug) | {_ro} range-outside (correct)")
+
+        # Track ORB rejections
+        for c in self.candidates:
+            if c['security_id'] not in self.orb_data:
+                self.funnel_counts['4. ORB Range']['rejected'] += 1
+                self.rejected_stocks.append({
+                    'ticker': c['ticker'], 'ltp': c['ltp'],
+                    'gap_pct': c.get('gap_pct', 0), 'rs': c.get('rs', 0),
+                    'failed_filter': ('ORB_NO_DATA' if self._orb_reject_reason.get(c['security_id']) == 'NO_DATA' else 'ORB_RANGE_INVALID'),
+                    'detail': self._orb_reject_reason.get(c['security_id'], 'No candle data after 3 retries'),
+                    'source': 'Watchlist'
+                })
+            else:
+                self.funnel_counts['4. ORB Range']['passed'] += 1
+
+    def score_candidate(self, candidate, breakout_strength):
+        rs_norm = min(candidate['rs'] / 3.0, 1.0)
+        trend = 0.6
+        rvol_norm = 0.6
+        atr_comp = 0.5
+        breakout_norm = min(breakout_strength, 1.0)
+        # Try to get historical data for better scoring
+        hist = self.dhan.get_historical_daily(str(candidate['security_id']), days=30)
+        if hist:
+            candles = hist.get('data', hist)
+            if isinstance(candles, dict) and 'close' in candles:
+                df = pd.DataFrame({k: [float(x) for x in v] for k, v in candles.items()
+                                   if k in ['open','high','low','close','volume']})
+            elif isinstance(candles, list):
+                df = pd.DataFrame(candles)
+                for col in ['open','high','low','close','volume']:
+                    if col in df.columns:
+                        df[col] = df[col].astype(float)
+            else:
+                df = pd.DataFrame()
+            if not df.empty and len(df) >= 20:
+                trend = indicators.compute_trend_quality(df)
+                comp = indicators.compute_volatility_compression(df)
+                if comp is not None:
+                    if comp < config.VOL_COMPRESSION_RATIO:
+                        atr_comp = 0.9
+                    elif comp > config.VOL_EXHAUSTION_RATIO:
+                        atr_comp = 0.2
+        score = (config.WEIGHT_RS * rs_norm +
+                 config.WEIGHT_TREND * trend +
+                 config.WEIGHT_RVOL * rvol_norm +
+                 config.WEIGHT_ATR_EXPANSION * atr_comp +
+                 config.WEIGHT_BREAKOUT * breakout_norm)
+        # Bonuses
+        if candidate.get('tier') == 'DISCOVERY':
+            score += config.PENALTY_TIER2
+        # FIX: Gap direction bonus - reward positive gap stocks
+        gap_val = candidate.get("gap_pct", 0)
+        if gap_val > 0.5:
+            score += 0.1  # Strong positive gap
+        elif gap_val > 0:
+            score += 0.05  # Mild positive gap
+        # Penalize negative gaps
+        elif gap_val < -1.0:
+            score -= 0.15  # Strong negative gap penalty
+        elif gap_val < 0:
+            score -= 0.05  # Mild negative gap penalty
+        return score
+
+    def check_breakout(self, candidate, ltp):
+        sid = candidate['security_id']
+        orb = self.orb_data.get(sid)
+        if not orb:
+            return False, 0
+        buffer = orb['high'] * (config.ORB_BUFFER_PCT / 100)
+        if ltp and orb.get("high") and ltp > orb['high'] + buffer:
+            strength = (ltp - orb['high']) / orb['range'] if orb['range'] > 0 else 0
+            # Candle quality check (wick filter)
+            upper_wick = orb['high'] - max(orb['open'], orb['close'])
+            if orb['range'] > 0 and upper_wick / orb['range'] > config.CANDLE_UPPER_WICK_MAX:
+                return False, 0
+            return True, min(strength, 1.0)
+        return False, 0
+
+    def check_breakdown(self, candidate, ltp):
+        """DOWNSIDE mirror of check_breakout. Returns (is_breakdown, strength)."""
+        sid = candidate['security_id']
+        orb = self.orb_data.get(sid)
+        if not orb:
+            return False, 0
+        buffer = orb['low'] * (config.ORB_BUFFER_PCT / 100)
+        if ltp and orb.get("low") and ltp < orb['low'] - buffer:
+            strength = (orb['low'] - ltp) / orb['range'] if orb['range'] > 0 else 0
+            lower_wick = min(orb['open'], orb['close']) - orb['low']
+            wick_max = getattr(config, "CANDLE_LOWER_WICK_MAX",
+                               getattr(config, "CANDLE_UPPER_WICK_MAX", 0.5))
+            if orb['range'] > 0 and lower_wick / orb['range'] > wick_max:
+                return False, 0
+            return True, min(strength, 1.0)
+        return False, 0
+
+    def check_rs_persistence(self, candidate, current_ltp):
+        nifty_prev = self.nifty_data.get('prev_close', 0)
+        nifty_ltp = self.nifty_data.get('ltp', 0)
+        prev_close = candidate.get('prev_close', 0)
+        if nifty_prev <= 0 or prev_close <= 0:
+            return True
+        nifty_change = (nifty_ltp - nifty_prev) / nifty_prev * 100
+        stock_change = (current_ltp - prev_close) / prev_close * 100
+        current_rs = stock_change / nifty_change if nifty_change > 0 else stock_change * 2
+        original_rs = candidate.get('rs', 1)
+        if original_rs <= 0:
+            return True
+        return (current_rs / original_rs) >= config.RS_PERSISTENCE_MIN
+
+    def place_entry(self, candidate, ltp, score):
+        balance = self.dhan.get_balance()
+        if not balance or balance <= 0:
+            log.error("Cannot get balance for entry")
+            return False
+        available = balance * (1 - config.CASH_BUFFER_PCT / 100)
+        risk_amount = available * (config.RISK_PER_TRADE_PCT / 100)
+        # Get ATR for SL
+        hist = self.dhan.get_historical_daily(str(candidate['security_id']), days=20)
+        atr_val = ltp * 0.02  # Default 2% if can't compute
+        if hist:
+            candles = hist.get('data', hist)
+            if isinstance(candles, dict) and 'close' in candles:
+                df = pd.DataFrame({k: [float(x) for x in v] for k, v in candles.items()
+                                   if k in ['open','high','low','close','volume']})
+            elif isinstance(candles, list):
+                df = pd.DataFrame(candles)
+                for col in ['open','high','low','close','volume']:
+                    if col in df.columns:
+                        df[col] = df[col].astype(float)
+            else:
+                df = pd.DataFrame()
+            if not df.empty and len(df) >= 14:
+                atr_series = indicators.compute_atr(df, period=14)
+                if atr_series is not None:
+                    atr_val = float(atr_series.iloc[-1])
+        sl_distance = atr_val * config.ATR_SL_MULTIPLIER
+        sl_distance += ltp * 0.001  # Add 0.1% transaction costs to risk calc
+        if sl_distance <= 0:
+            return False
+        # P0: Smart position sizing with guardrails
+        sizing = calculate_safe_qty(ltp, sl_distance, available, candidate.get("adv_shares"), size_mult=candidate.get("_size_mult", 1.0))
+        if sizing.get('qty', 0) < 1:
+            log.warning(f"SIZING REJECTED: {sizing.get('reason', 'unknown')}")
+            return None
+        qty = sizing['qty']
+        if candidate.get('tier') == 'DISCOVERY':
+            qty = int(qty * config.TIER2_POSITION_FACTOR)
+        if qty < config.MIN_QUANTITY:
+            log.info(f"Qty {qty} < min {config.MIN_QUANTITY}. Skipping.")
+            return False
+        if qty * ltp > available:
+            qty = int(available / ltp)
+            if qty < config.MIN_QUANTITY:
+                return False
+        # Place order
+        sl_price = round(ltp - sl_distance, 2)
+        log.info(f"PLACING ORDER: {candidate['ticker']} qty={qty} @ ₹{ltp:.2f} SL=₹{sl_price:.2f}")
+        start_time = time.time()
+        order_resp = self.dhan.place_order(candidate['security_id'], qty, ltp, "BUY", "LIMIT")
+        if isinstance(order_resp, list): order_resp = order_resp if order_resp else {}
+        latency = int((time.time() - start_time) * 1000)
+
+        if not order_resp:
+            self.dynamo.log_order_audit('FAILED', candidate['ticker'], candidate['security_id'],
+                                        'BUY', 'REJECTED', qty, 0, ltp, 0, 'API returned None', latency)
+            return False
+        order_id = order_resp.get('orderId', order_resp.get('order_id', ''))
+        self.dynamo.log_order_audit(order_id, candidate['ticker'], candidate['security_id'],
+                                    'BUY', 'SUBMITTED', qty, 0, ltp, 0, '', latency)
+        # Wait for fill
+        filled_qty = 0
+        filled_price = ltp
+        for _ in range(12):  # 2 minutes (10s intervals)
+            time.sleep(10)
+            status = self.dhan.get_order_status(order_id)
+            # FIX 2026-07-14: Dhan get_order_status() may return a LIST of order
+            # objects instead of a dict. Unwrap to the dict matching this order_id
+            # (else the last dict) BEFORE calling .get(), to avoid
+            # AttributeError: 'list' object has no attribute 'get'.
+            if isinstance(status, list):
+                status = next(
+                    (o for o in status
+                     if isinstance(o, dict)
+                     and str(o.get('orderId', o.get('order_id', ''))) == str(order_id)),
+                    (status[-1] if status and isinstance(status[-1], dict) else None),
+                )
+            if status and isinstance(status, dict):
+                order_status = status.get('orderStatus', status.get('status', ''))
+                if order_status in ['TRADED', 'COMPLETE']:
+                    filled_qty = int(status.get('filledQty', status.get('quantity', qty)))
+                    filled_price = float(status.get('price', status.get('averagePrice', ltp)))
+                    break
+                elif order_status == 'PARTIALLY_TRADED':
+                    filled_qty = int(status.get('filledQty', 0))
+                    if filled_qty >= qty * config.PARTIAL_FILL_MIN_PCT:
+                        self.dhan.cancel_order(order_id)
+                        filled_price = float(status.get('averagePrice', ltp))
+                        break
+                elif order_status in ['CANCELLED', 'REJECTED']:
+                    self.dynamo.log_order_audit(order_id, candidate['ticker'], candidate['security_id'],
+                                                'BUY', order_status, qty, 0, ltp, 0,
+                                                status.get('reason', ''), latency)
+                    return False
+
+        if filled_qty <= 0:
+            # Timeout — cancel
+            self.dhan.cancel_order(order_id)
+            self.dynamo.log_order_audit(order_id, candidate['ticker'], candidate['security_id'],
+                                        'BUY', 'CANCELLED_TIMEOUT', qty, 0, ltp, 0, 'Timeout', latency)
+            return False
+
+        # Partial fill check
+        if filled_qty < qty * config.PARTIAL_FILL_MIN_PCT:
+            log.info(f"Partial fill too small: {filled_qty}/{qty}. Exiting.")
+            self.dhan.place_order(candidate['security_id'], filled_qty, 0, "SELL", "MARKET")
+            self.dynamo.log_order_audit(order_id, candidate['ticker'], candidate['security_id'],
+                                        'BUY', 'PARTIAL_EXIT', qty, filled_qty, ltp, filled_price, '', latency)
+            return False
+
+        # SUCCESS — Record active trade
+        self.dynamo.log_order_audit(order_id, candidate['ticker'], candidate['security_id'],
+                                    'BUY', 'FILLED', qty, filled_qty, ltp, filled_price, '', latency)
+        actual_sl = round(filled_price - sl_distance, 2)
+        r_value = sl_distance
+        self.active_trade = {
+            'symbol': candidate['ticker'],
+            'security_id': str(candidate['security_id']),
+            'entry_price': str(round(filled_price, 2)),
+            'qty': str(filled_qty),
+            'sl': str(actual_sl),
+            'r_value': str(round(r_value, 2)),
+            'max_price': str(round(filled_price, 2)),
+            'trailing_sl': str(actual_sl),
+            'phase': 'INITIAL',
+            'score': str(round(score, 4)),
+            'tier': candidate.get('tier', 'CURATED'),
+            'entry_time': now_ist().isoformat(),
+            'order_id': str(order_id),
+            'expected_entry': str(round(ltp, 2)),
+            'entry_slippage': str(round(filled_price - ltp, 2))
+        }
+        try:
+            import trade_journal
+            trade_journal.log_trade(self.active_trade)
+        except Exception:
+            pass
+        self.dynamo.save_active_trade(self.active_trade)
+        self.email.notify_entry(candidate['ticker'], filled_price, filled_qty, actual_sl, score, candidate.get('tier'))
+        log.info(f"✅ ENTRY: {candidate['ticker']} @ ₹{filled_price:.2f} x{filled_qty} SL=₹{actual_sl:.2f}")
+        return True
+
+    def monitor_active_trade(self):
+        # Check Dhan for any open positions (catches manual trades)
+        if not self.active_trade:
+            try:
+                resp = self._request("GET", "/v2/positions")
+                if isinstance(resp, list):
+                    for pos in resp:
+                        if pos.get("netQty", 0) > 0 and pos.get("productType") == "INTRADAY":
+                            _bpx = float(pos.get("buyAvg", 0) or 0)
+                            _bsl = round(_bpx * 0.97, 2)   # reconstructed 3% SL — REAL ORB r_value is lost
+                            _brv = round(_bpx - _bsl, 2)
+                            self.active_trade = {
+                                "symbol": pos.get("tradingSymbol", "UNKNOWN"),
+                                "security_id": str(pos.get("securityId", "")),
+                                "entry_price": str(round(_bpx, 2)),
+                                "qty": str(int(pos.get("netQty", 0))),
+                                "sl": str(_bsl),
+                                "r_value": str(_brv),
+                                "max_price": str(round(_bpx, 2)),
+                                "trailing_sl": str(_bsl),
+                                "phase": "INITIAL",
+                                "tier": "RECOVERED",
+                                "entry_time": now_ist().isoformat(),
+                                "order_id": "",
+                                "score": "0",
+                            }
+                            log.warning(
+                                "RECOVERED %s qty=%s @ Rs.%.2f : r_value RECONSTRUCTED "
+                                "(3%% approx, real ORB SL lost) -> R-multiples APPROXIMATE; "
+                                "dead-trade 30min timer reset." % (
+                                    self.active_trade["symbol"], self.active_trade["qty"], _bpx))
+                            log.info(f"Found open position: {self.active_trade}")
+                            break
+            except Exception as e:
+                log.warning(f"Position check failed: {e}")
+        if not self.active_trade:
+            return
+        symbol = self.active_trade['symbol']
+        sid = self.active_trade['security_id']
+        entry_price = float(self.active_trade['entry_price'])
+        qty = int(self.active_trade['qty'])
+        r_value = float(self.active_trade['r_value'])
+        max_price = float(self.active_trade['max_price'])
+        trailing_sl = float(self.active_trade['trailing_sl'])
+
+        # Get current LTP
+            # Use WebSocket for real-time price if available
+        # RS SHADOW: fetch NIFTY (sid 13) in the SAME call — no extra round-trip
+        ltp_data = self.fetch_ltp_concurrent([sid, '13'])
+        current_ltp = ltp_data.get(str(sid), ltp_data.get(sid, 0))
+        _nifty_ltp_live = ltp_data.get('13', 0) or self.nifty_data.get('ltp', 0)
+        if current_ltp <= 0:
+            return
+
+        # Update max price
+        max_price = max(max_price, current_ltp)
+
+        # ═══ PEAK DETECTION EXIT (Master-Level) ═══
+        if not hasattr(self, "_peak_detector") or self._peak_detector is None:
+            entry_p = float(self.active_trade.get("entry_price", 0) or 0)
+            sl_p = float(self.active_trade.get("sl_price", 0) or 0)
+            if entry_p > 0 and sl_p > 0:
+                self._peak_detector = None  # DISABLED: broken API, rely on SMART_EXIT_v2
+
+        # Feed candle to peak detector every 5 min
+        if hasattr(self, "_peak_detector") and self._peak_detector:
+            if hasattr(self, "_last_peak_check"):
+                elapsed = time.time() - self._last_peak_check
+            else:
+                elapsed = 999
+            if elapsed >= 300:  # Every 5 minutes
+                self._last_peak_check = time.time()
+                # Use current LTP as candle approximation
+                _open = self.active_trade.get("last_ltp", ltp)
+                pass  # PeakDetector DISABLED — SMART_EXIT_v2 below handles exits
+        pnl_per_share = current_ltp - entry_price
+        r_multiple = pnl_per_share / r_value if r_value > 0 else 0
+
+        # ═══ SMART EXIT ESCALATOR ═══
+        entry_time_str = self.active_trade.get("entry_time", "")
+        if entry_time_str:
+            try:
+                from datetime import datetime as dt2
+                entry_dt = dt2.fromisoformat(entry_time_str)
+                minutes_held = (dt2.now() - entry_dt).total_seconds() / 60
+            except:
+                minutes_held = 0
+        else:
+            minutes_held = 0
+
+        # DEAD TRADE EXIT: No +0.5R in 30 min = exit at market
+        if minutes_held >= 30 and r_multiple < 0.5:
+            self.exit_trade(current_ltp, "DEAD_TRADE_30MIN")
+            return
+
+        # BREAKEVEN LOCK: Once +0.5R reached, SL moves to entry+0.1R
+        if r_multiple >= 2.0 and trailing_sl < entry_price:
+            trailing_sl = entry_price + (r_value * 0.5)
+            log.info(f"ESCALATOR: Breakeven lock activated at Rs.{trailing_sl:.2f}")
+
+        # MOMENTUM LOCK: At +1R, lock 0.5R minimum profit
+        if r_multiple >= 3.0:
+            min_lock = entry_price + (r_value * 0.5)
+            trailing_sl = max(trailing_sl, min_lock)
+
+        # Trailing SL logic (4 phases)
+        new_sl = trailing_sl
+        phase = self.active_trade.get('phase', 'INITIAL')
+
+        if r_multiple >= config.TRAIL_PHASE3_TRIGGER:
+            # R-SKATE v2: multi-stage asymmetric peak give-back (replaces single-stage PHASE3)
+            _peak_r = (max_price - entry_price) / r_value if r_value > 0 else 0.0
+            if _peak_r < 1.5:
+                _gb = 0.50 - (0.50 - 0.35) * ((_peak_r - 1.0) / 0.5)
+            elif _peak_r < 3.0:
+                _gb = 0.35
+            else:
+                _gb = 0.20
+            _dyn = _peak_r * (1.0 - _gb)
+            _flr = 0.3
+            for _t, _f in ((1.0, 0.3), (1.5, 0.7), (2.5, 1.5), (4.0, 3.0)):
+                if _peak_r >= _t:
+                    _flr = max(_flr, _f)
+            if _peak_r >= 1.25:
+                _flr = max(_flr, 0.5)
+            _exit_r = max(_dyn, _flr)
+            new_sl = entry_price + (_exit_r * r_value)
+            phase = 'RSKATE_S1' if _peak_r < 1.5 else ('RSKATE_S2' if _peak_r < 3.0 else 'RSKATE_S3')
+        elif r_multiple >= config.TRAIL_PHASE2_TRIGGER:
+            phase = 'PHASE2'
+            new_sl = entry_price + (r_value * config.TRAIL_PHASE2_LEVEL)
+        elif r_multiple >= config.TRAIL_PHASE1_TRIGGER:
+            phase = 'PHASE1'
+            new_sl = entry_price + (r_value * config.TRAIL_PHASE1_LEVEL)
+
+        trailing_sl = max(trailing_sl, new_sl)
+        # === SMART EXIT v2: 5-Min Candle Prediction ===
+        try:
+            sid = self.active_trade["security_id"]
+            candles_5m = self.dhan.get_ohlc_intraday(str(sid), interval="5")
+            if candles_5m and isinstance(candles_5m, dict):
+                closes = candles_5m.get("close", [])
+                opens = candles_5m.get("open", [])
+                highs = candles_5m.get("high", [])
+                lows = candles_5m.get("low", [])
+                volumes = candles_5m.get("volume", [])
+                if len(closes) >= 3:
+                    c1, c2, c3 = closes[-3], closes[-2], closes[-1]
+                    v1, v2, v3 = (volumes[-3] if len(volumes)>=3 else 1), (volumes[-2] if len(volumes)>=2 else 1), (volumes[-1] if len(volumes)>=1 else 1)
+                    h3, l3, o3 = highs[-1], lows[-1], opens[-1]
+
+                    # SIGNAL 1: Momentum Decay (3 lower closes)
+                    momentum_decay = (c3 < c2 < c1)
+
+                    # SIGNAL 2: Volume Exhaustion (last vol < 50% of avg prev 2)
+                    avg_vol = (v1 + v2) / 2 if (v1 + v2) > 0 else 1
+                    volume_exhaust = v3 < (avg_vol * 0.5)
+
+                    # SIGNAL 3: Reversal Candle (bearish engulfing or long upper wick)
+                    body = c3 - o3
+                    candle_range = h3 - l3 if h3 > l3 else 0.01
+                    upper_wick = h3 - max(o3, c3)
+                    prev_body = abs(c2 - opens[-2]) if len(opens) >= 2 else 0
+                    reversal_candle = (body < 0 and abs(body) > prev_body) or (upper_wick > candle_range * 0.6)
+
+                    # SIGNAL 4: Below VWAP
+                    below_vwap = False
+                    if len(volumes) >= 5 and sum(volumes[-5:]) > 0:
+                        vwap_approx = sum(c*v for c,v in zip(closes[-5:], volumes[-5:])) / sum(volumes[-5:])
+                        below_vwap = current_ltp < vwap_approx
+
+                    bearish_count = sum([momentum_decay, volume_exhaust, reversal_candle, below_vwap])
+
+                    # ═══ SHADOW EXIT SCORE v1 — computes + logs, ACTS ON NOTHING ═══
+                    try:
+                        if not hasattr(self, '_shadow_state'):
+                            self._shadow_state = {}
+                        _ss = self._shadow_state.setdefault(str(sid), {})
+
+                        # RS (25): stock day-return minus NIFTY day-return (live NIFTY from tick fetch)
+                        _stk_ref = self._prev_closes.get(str(sid), 0) or entry_price
+                        _nif_ref = self.nifty_data.get('prev_close', 0) or 0
+                        _stk_ret = (current_ltp - _stk_ref) / _stk_ref * 100 if _stk_ref > 0 else 0.0
+                        _nif_ret = (_nifty_ltp_live - _nif_ref) / _nif_ref * 100 if _nif_ref > 0 else 0.0
+                        _rs = _stk_ret - _nif_ret
+                        _rs_peak = max(_ss.get('rs_peak', _rs), _rs)
+                        _ss['rs_peak'] = _rs_peak
+                        _rs_drop = ((_rs_peak - _rs) / _rs_peak * 100) if _rs_peak > 0 else 0.0
+                        _sig_rs = (_rs_peak > 0 and _rs_drop >= 40)
+
+                        # Failed new highs (20) + HL failure — update ONLY on a new 5-min candle
+                        _ncand = len(closes)
+                        _new_candle = _ncand > _ss.get('ncand', 0)
+                        _ss['ncand'] = _ncand
+                        _hi_max = _ss.get('hi_max', h3)
+                        _fails = _ss.get('hi_fails', 0)
+                        _prev_low = _ss.get('prev_low', l3)
+                        _sig_ll = False
+                        if _new_candle:
+                            if h3 > _hi_max + 1e-9:
+                                _hi_max = h3; _fails = 0
+                            else:
+                                _fails += 1
+                            _sig_ll = (l3 < _prev_low - 1e-9)
+                            _prev_low = l3
+                        _ss['hi_max'] = _hi_max; _ss['hi_fails'] = _fails; _ss['prev_low'] = _prev_low
+                        _sig_fails = (_fails >= 3)
+
+                        # Reuse SMART_EXIT_v2 signals + VWAP extension magnitude
+                        _sig_wick = bool(reversal_candle)   # 15
+                        _sig_vol  = bool(volume_exhaust)    # 15
+                        _sig_mom  = bool(momentum_decay)    # 10
+                        _vwap = None
+                        if len(volumes) >= 5 and sum(volumes[-5:]) > 0:
+                            _vwap = sum(cc*vv for cc, vv in zip(closes[-5:], volumes[-5:])) / sum(volumes[-5:])
+                        _vwap_ext = ((current_ltp - _vwap) / _vwap * 100) if _vwap else 0.0
+                        _sig_vwap = (_vwap_ext >= 6.0)      # 10
+                        _sig_mkt = (_nif_ret < 0)           # 5: market weak
+
+                        _score = (25*_sig_rs + 20*_sig_fails + 15*_sig_wick +
+                                  15*_sig_vol + 10*_sig_mom + 10*_sig_vwap + 5*_sig_mkt)
+                        # AND-gate = FUTURE live danger-exit (confluence, no weight calibration)
+                        _and_gate = (_sig_rs and _sig_fails and _sig_wick)
+
+                        _p = []
+                        if _sig_rs:    _p.append(f"RS↓{_rs_drop:.0f}%(25)")
+                        if _sig_fails: _p.append(f"fails{_fails}(20)")
+                        if _sig_wick:  _p.append("wick(15)")
+                        if _sig_vol:   _p.append("vol(15)")
+                        if _sig_mom:   _p.append("mom(10)")
+                        if _sig_vwap:  _p.append(f"vwapext{_vwap_ext:.1f}%(10)")
+                        if _sig_mkt:   _p.append("mktweak(5)")
+                        log.info(
+                            f"SHADOW_EXIT {symbol} score={_score} r={r_multiple:.2f} "
+                            f"RS={_rs:+.2f}(pk{_rs_peak:+.2f}) HLfail={_sig_ll} | "
+                            f"{' '.join(_p) or 'none'} | AND-gate={'TRUE' if _and_gate else 'false'}")
+                    except Exception as _se:
+                        log.debug(f"SHADOW_EXIT skipped: {_se}")
+
+                    # EXIT: 3+ signals AND profit > 0.5R
+                    if bearish_count >= 3 and r_multiple >= 0.5:
+                        log.info(f"SMART_EXIT_v2: {bearish_count}/4 bearish signals")
+                        self.exit_trade(current_ltp, f"SMART_EXIT_{bearish_count}of4")
+                        return
+
+                    # EXIT: 2 signals + profit declining (peak>1R, now<0.7R)
+                    peak_r = (max_price - entry_price) / r_value if r_value > 0 else 0
+                    if bearish_count >= 2 and peak_r >= 1.0 and r_multiple < 0.7:
+                        log.info(f"SMART_EXIT_v2: Profit decay peak={peak_r:.1f}R now={r_multiple:.1f}R + {bearish_count} signals")
+                        self.exit_trade(current_ltp, "SMART_EXIT_PROFIT_DECAY")
+                        return
+
+        except Exception as e:
+            log.debug(f"Smart Exit v2 skipped: {e}")
+
+
+        # Check exit conditions
+        exit_reason = None
+        if current_ltp <= trailing_sl:
+            exit_reason = f"TRAILING_SL_{phase}"
+        elif now_ist() >= ist_time(15, 15):
+            exit_reason = "MANDATORY_EXIT_3:15PM"
+
+        if exit_reason:
+            self.exit_trade(current_ltp, exit_reason)
+            return
+
+        # Update state
+        self.active_trade['max_price'] = str(round(max_price, 2))
+        self.active_trade['trailing_sl'] = str(round(trailing_sl, 2))
+        self.active_trade['phase'] = phase
+        self.dynamo.save_active_trade(self.active_trade)
+        log.info(f"📊 {symbol}: ₹{current_ltp:.2f} | R={r_multiple:.2f} | "
+                 f"Phase={phase} | SL=₹{trailing_sl:.2f}")
+
+    def exit_trade(self, exit_price, reason):
+        if not self.active_trade:
+            return
+        symbol = self.active_trade['symbol']
+        sid = self.active_trade['security_id']
+        entry_price = float(self.active_trade['entry_price'])
+        qty = int(self.active_trade['qty'])
+        r_value = float(self.active_trade['r_value'])
+
+        # GUARD: verify a live long exists at broker before selling (prevents phantom short)
+        _live = 0
+        try:
+            _pos = self.dhan.get_positions()
+            if isinstance(_pos, dict): _pos = _pos.get('data', [])
+            if isinstance(_pos, list):
+                for _p in _pos:
+                    if str(_p.get('securityId', '')) == str(sid):
+                        _live = int(_p.get('netQty', 0) or 0)
+                        break
+        except Exception as _pe:
+            log.error(f"Exit position-check failed ({_pe}) - proceeding with recorded qty")
+            _live = qty  # feed error: fall back to recorded qty rather than skip a real exit
+        if _live <= 0:
+            log.warning(f"EXIT SKIPPED: {symbol} not live at broker (netQty={_live}) - clearing stale record")
+            self.active_trade = None
+            self.dynamo.clear_active_trade()
+            return
+        qty = min(qty, _live)  # never sell more than actually held
+
+        # Place sell order
+        log.info(f"SELLING: {symbol} qty={qty} @ MARKET (reason: {reason})")
+        start_time = time.time()
+        sell_resp = self.dhan.place_order(int(sid), qty, 0, "SELL", "MARKET")
+        if isinstance(sell_resp, list): sell_resp = sell_resp[0] if sell_resp else {}
+        latency = int((time.time() - start_time) * 1000)
+
+        actual_exit = exit_price
+        sell_order_id = ''
+        try:
+            if sell_resp:
+                sell_order_id = sell_resp.get('orderId', sell_resp.get('order_id', ''))
+                time.sleep(5)
+                status = self.dhan.get_order_status(sell_order_id)
+                if isinstance(status, list): status = status[0] if status else {}
+                if status:
+                    actual_exit = float(status.get('averagePrice', status.get('price', exit_price)))
+        except Exception as _rbe:
+            log.warning(f"Fill-price readback failed (non-fatal): {_rbe}")
+
+        pnl = (actual_exit - entry_price) * qty
+        r_mult = (actual_exit - entry_price) / r_value if r_value > 0 else 0
+
+        # Log audit
+        self.dynamo.log_order_audit(sell_order_id, symbol, int(sid), 'SELL', 'FILLED',
+                                    qty, qty, exit_price, actual_exit, reason, latency)
+
+        # Log trade
+        trade_record = {
+            'trade_id': str(uuid.uuid4()),
+            'trade_date': now_ist().strftime('%Y-%m-%d'),
+            'symbol': symbol,
+            'security_id': sid,
+            'entry_price': str(round(entry_price, 2)),
+            'exit_price': str(round(actual_exit, 2)),
+            'qty': str(qty),
+            'pnl': str(round(pnl, 2)),
+            'r_multiple': str(round(r_mult, 2)),
+            'reason': reason,
+            'entry_time': self.active_trade.get('entry_time', ''),
+            'exit_time': now_ist().isoformat(),
+            'tier': self.active_trade.get('tier', ''),
+            'score': self.active_trade.get('score', ''),
+            'expected_entry': self.active_trade.get('expected_entry', ''),
+            'entry_slippage': self.active_trade.get('entry_slippage', ''),
+            'expected_exit': str(round(exit_price, 2)),
+            'exit_slippage': str(round(actual_exit - exit_price, 2))
+        }
+        self.dynamo.log_trade(trade_record)
+
+        # Update daily state
+        self.daily_pnl += pnl
+        self.trades_today += 1
+        if pnl < 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
+
+        self.dynamo.save_daily_state({
+            'daily_pnl': str(round(self.daily_pnl, 2)),
+            'trades_taken': str(self.trades_today),
+            'consecutive_losses': str(self.consecutive_losses)
+        })
+
+        # Notify
+        try:
+            import trade_journal
+            trade_journal.log_exit(self.active_trade)
+        except Exception:
+            pass
+        self.email.notify_exit(symbol, entry_price, actual_exit, qty, pnl, reason, r_mult)
+        log.info(f"{'💰' if pnl > 0 else '🔴'} EXIT: {symbol} PnL=₹{pnl:.2f} ({r_mult:.2f}R)")
+
+        # Clear active trade
+        self.active_trade = None
+        self.dynamo.clear_active_trade()
+
+        # Loss lock check
+        if self.consecutive_losses >= config.MAX_CONSECUTIVE_LOSSES:
+            self.email.notify_loss_lock(self.consecutive_losses)
+            log.info("⚠️ LOSS LOCK ACTIVATED")
+
+
+    def check_momentum_timeout(self, entry_price, sl_distance, entry_time):
+        """FILTER 9: Exit if not +0.5R within 10 minutes of entry"""
+        import time as t_mod
+        elapsed = (t_mod.time() - entry_time) / 60  # minutes
+        if elapsed >= 10:
+            sid = str(self.active_trade.get("security_id", ""))
+            current_ltp = self.get_live_price(sid)
+            gain_r = (current_ltp - entry_price) / sl_distance if sl_distance > 0 else 0
+            if gain_r < 0.3:
+                log.info(f"MOMENTUM TIMEOUT: Only {gain_r:.2f}R after 10 min - exiting early")
+                return True  # Signal to exit
+        return False
+
+    def scan_for_breakout(self):
+        """Collect ALL breakouts, apply rank-gated buffer + R/cost gates,
+        pick best expected-R. Fail-safe: never raises.
+        Returns (candidate, entry_price, expected_r) or None."""
+        try:
+            from dhan_charges import dhan_charges_mis
+        except Exception:
+            dhan_charges_mis = lambda q, e, s=None: 25.0
+
+        if not self.candidates or not self.orb_data:
+            return None
+        sids = [str(c['security_id']) for c in self.candidates
+                if c['security_id'] in self.orb_data]
+        if not sids:
+            return None
+        ltp_data = self.fetch_ltp_concurrent(sids)
+
+        # FIX 2026-07-14: read self.regime (CHOPPY/TRENDING/NORMAL) NOT market_regime
+        # (which holds the mode FULL/CONSERVATIVE/NO_TRADE). Prior code made
+        # MEASURED_MOVE_M_TRENDING unreachable -> all trades sized at M_NORMAL.
+        regime = getattr(self, "regime", getattr(self, "market_regime", "NORMAL"))
+        M = getattr(config, "MEASURED_MOVE_M_TRENDING", 1.5) if regime.startswith("TRENDING") else getattr(config, "MEASURED_MOVE_M_NORMAL", 1.25)
+
+        bal = getattr(self, "_last_balance", None) or 51000
+        risk_rupees = bal * (config.RISK_PER_TRADE_PCT / 100.0)
+        if getattr(self, "market_regime", None) == "CONSERVATIVE":
+            risk_rupees *= getattr(config, "BEARISH_SIZE_MULT", 0.5)
+
+        rank_of = {c['security_id']: i for i, c in enumerate(self.candidates)}
+        BASE, STEP, CAP, MIN_R, COST_RATIO = 0.25, 0.05, 0.60, 1.5, 3.0
+        survivors = []
+
+        for candidate in self.candidates:
+            sid = candidate["security_id"]
+            if sid not in self.orb_data:
+                continue
+            ltp = ltp_data.get(str(sid), 0)
+            if ltp <= 0:
+                continue
+            orb = self.orb_data.get(sid, {})
+            orb_high = orb.get("high", 0)
+            orb_low = orb.get("low", 0)
+            orb_range = orb_high - orb_low
+            if orb_range <= 0 or orb_high <= 0:
+                continue
+            if (orb_range / orb_high) * 100 < config.ORB_MIN_RANGE_PCT:
+                continue
+
+            ri = rank_of.get(sid, len(self.candidates))
+            rank_frac = min(BASE + ri * STEP, CAP)
+            buffered_entry = orb_high + rank_frac * orb_range
+            if ltp < buffered_entry:
+                continue
+
+            sl = orb_high - 0.3 * orb_range
+            sl = min(sl, ltp * 0.995) if ltp > 0 else sl  # Safety: SL must be below entry
+            risk_per_share = buffered_entry - sl
+            if risk_per_share <= 0:
+                continue
+            target = orb_high + M * orb_range
+            expected_r = (target - buffered_entry) / risk_per_share
+            if expected_r < MIN_R:
+                continue
+
+            qty = int(risk_rupees / risk_per_share)
+            if qty < 1:
+                continue
+            target_gross = qty * (target - buffered_entry)
+            est = dhan_charges_mis(qty, buffered_entry, target)
+            if target_gross < COST_RATIO * est:
+                continue
+
+            survivors.append({"candidate": candidate, "entry": buffered_entry,
+                              "sl": sl, "expected_r": expected_r,
+                              "rank_index": ri, "qty": qty})
+
+        if not survivors:
+            return None
+        survivors.sort(key=lambda d: (-d["expected_r"], d["rank_index"]))
+        best = survivors[0]
+        log.info(f"{len(survivors)} qualified breakouts | regime={regime} M={M} | "
+                 f"pick={best['candidate'].get('ticker','?')} "
+                 f"rank#{best['rank_index']+1} entry={best['entry']:.2f} "
+                 f"R={best['expected_r']:.2f} qty~{best['qty']}")
+        best["candidate"]["_planned_entry"] = best["entry"]
+        best["candidate"]["_planned_sl"] = best["sl"]
+        return (best["candidate"], best["entry"], best["expected_r"])
+
+    def get_scan_interval(self):
+        if not self.orb_data or not self.candidates:
+            return config.SCAN_INTERVAL_NORMAL
+        sids = [str(c['security_id']) for c in self.candidates if c['security_id'] in self.orb_data]
+        if not sids:
+            return config.SCAN_INTERVAL_NORMAL
+        ltp_data = self.fetch_ltp_concurrent(sids[:config.TIER2_TOP_N])
+        for candidate in self.candidates[:config.TIER2_TOP_N]:
+            sid = candidate['security_id']
+            orb = self.orb_data.get(sid)
+            if not orb:
+                continue
+            ltp = ltp_data.get(str(sid), 0)
+            if ltp <= 0:
+                continue
+            distance = (orb['high'] - ltp) / orb['high'] * 100
+            if 0 < distance <= config.NEAR_ORB_THRESHOLD_PCT:
+                log.info(f"⚡ {candidate['ticker']} within {distance:.2f}% of ORB — ACCELERATING")
+                return config.SCAN_INTERVAL_NEAR_ORB
+        return config.SCAN_INTERVAL_NORMAL
+
+    def run(self):
+        try:
+            balance = self.dhan.get_balance()
+            if not balance:
+                log.error("Cannot fetch balance. Exiting.")
+                self.email.notify_error("Cannot fetch balance at startup")
+                return
+            log.info(f"Balance: ₹{balance:,.2f}")
+            self.email.notify_start(balance)
+
+            # Load any existing state
+            state = self.dynamo.get_daily_state()
+            if state:
+                self.daily_pnl = float(state.get('daily_pnl', 0))
+                self.trades_today = int(state.get('trades_taken', 0))
+                self.consecutive_losses = int(state.get('consecutive_losses', 0))
+
+            # Check for recovered active trade — RECONCILE against broker before trusting
+            active = self.dynamo.get_active_trade()
+            if active and 'symbol' in active:
+                _sid = str(active.get('security_id', ''))
+                _live = 0
+                try:
+                    _pos = self.dhan.get_positions()
+                    if isinstance(_pos, dict): _pos = _pos.get('data', [])
+                    if isinstance(_pos, list):
+                        for _p in _pos:
+                            if str(_p.get('securityId', '')) == _sid:
+                                _live = int(_p.get('netQty', 0) or 0)
+                                break
+                except Exception as _re:
+                    log.error(f"Reconcile check failed ({_re}) - NOT trusting stale record")
+                    _live = 0
+                if _live > 0:
+                    self.active_trade = active
+                    log.info(f"Recovered active trade: {active['symbol']} (broker netQty={_live})")
+                else:
+                    log.warning(f"Recovered record {active['symbol']} NOT live at broker (netQty={_live}) - clearing stale record")
+                    self.dynamo.clear_active_trade()
+                    self.active_trade = None
+
+            # Wait for provisional regime read (09:18 — ~3 min of post-open data)
+            while now_ist() < ist_time(9, 18):
+                log.info(f"Waiting for market open... ({time_str()})")
+                time.sleep(15)
+
+            # PHASE 1a: PROVISIONAL regime read @ 09:18
+            provisional_mode = self.check_market_quality()
+            log.info(f"Regime PROVISIONAL @09:18: {provisional_mode}")
+
+            # Wait to re-verify @ 09:28 (~13 min data, still before ORB completes 09:30)
+            while now_ist() < ist_time(9, 28):
+                time.sleep(10)
+
+            # PHASE 1b: AUTHORITATIVE regime re-verify @ 09:28 (more data wins)
+            market_mode = self.check_market_quality()
+            self.market_regime = market_mode
+            if market_mode != provisional_mode:
+                log.warning(f"Regime CHANGED 09:18->09:28: {provisional_mode} -> {market_mode} (using 09:28 confirmed)")
+            else:
+                log.info(f"Regime CONFIRMED @09:28: {market_mode} (stable across both reads)")
+
+            # NO_TRADE decided on the CONFIRMED 09:28 read only (D1: avoid noisy early false-shutdown)
+            if market_mode == 'NO_TRADE':
+                if not self.no_trade_notified:
+                    self.email.notify_no_trade("Market below EMA50 / both indices below VWAP")
+                    self.no_trade_notified = True
+                log.info("No trade today. Shutting down.")
+                return
+
+
+            # Wait for ORB completion (9:30) before scanning
+            while now_ist() < ist_time(9, 31):
+                time.sleep(10)
+
+            # PHASE 2: Select candidates
+            self.select_candidates()
+
+            # --- PATH B SHADOW: log resolved PDH at selection (FILTERS_V2-gated, no orders) ---
+            if getattr(config, "FILTERS_V2", False):
+                try:
+                    from pdh_cache import build_pdh_map
+                    from path_b_shadow import PathBShadow
+                    self._pathb_pdh_map, _pathb_missing = build_pdh_map(self.candidates)
+                    self._pathb = PathBShadow(log, self._pathb_pdh_map, getattr(self, "market_regime", "NORMAL"))
+                    log.info("[SHADOW-PATHB] PDH map built: %d with PDH, %d missing" % (len(self._pathb_pdh_map), len(_pathb_missing)))
+                    for _sid, _pdh in list(self._pathb_pdh_map.items())[:50]:
+                        log.info("[SHADOW-PATHB] PDH sid=%s = %.2f" % (_sid, _pdh))
+                except Exception as _e:
+                    log.warning("[SHADOW-PATHB] PDH map build failed (shadow, non-blocking): %s" % _e)
+            if not self.candidates:
+                if not self.no_trade_notified:
+                    self.email.notify_no_trade("No candidates passed morning filters")
+                    self.no_trade_notified = True
+                return
+
+
+            # PHASE 4: Record ORB
+            # Start WebSocket for selected candidates
+            if self.candidates:
+                candidate_sids = [str(c["security_id"]) for c in self.candidates[:20]]
+                self.start_websocket(candidate_sids, mode="quote")
+            # Try WebSocket ORB first (0 API calls), fallback to REST
+            if hasattr(self, "ws_engine") and self.ws_engine and self.ws_engine.orb_tracker.orb_complete:
+                self.orb_data = {}
+                for sid, orb in self.ws_engine.orb_tracker.orb_data.items():
+                    orb_range = orb["high"] - orb["low"]
+                    range_pct = orb_range / orb["high"] * 100 if orb["high"] > 0 else 0
+                    if config.ORB_MIN_RANGE_PCT <= range_pct <= config.ORB_MAX_RANGE_PCT:
+                        self.orb_data[sid] = {"high": orb["high"], "low": orb["low"], "open": orb["open"], "close": orb["close"], "volume": orb.get("volume",0), "range": orb_range, "range_pct": range_pct}
+                log.info(f"ORB from WebSocket: {len(self.orb_data)} valid ranges")
+            else:
+                self.record_orb()
+            # === LIVE BEARISH-DAY SECTOR ROTATION (v6.8) ===
+            regime = getattr(self, "market_regime", getattr(self, "regime", "NORMAL"))
+            if regime == "CONSERVATIVE" and getattr(config, "BEARISH_LIVE_ENABLED", False):
+                try:
+                    import sector_rotation as _sr
+                    from sector_rotation import find_leading_sectors, is_sector_eligible
+                    if not _sr.SECTOR_MAP:
+                        _sr.load_sector_map("watchlist.csv")
+                        log.info(f"Sector map loaded on demand: {len(_sr.SECTOR_MAP)} stocks")
+                    import json as _json
+                    sector_prev = {}
+                    try:
+                        with open("sector_prev_close.json", "r") as _f:
+                            sector_prev = _json.load(_f)
+                    except Exception:
+                        pass
+                    nifty_ret = self.nifty_data.get("gap", 0) if hasattr(self, "nifty_data") else 0
+                    log.info(f"BEARISH day. Checking sector rotation...")
+                    if not sector_prev:
+                        log.info("No sector_prev_close.json -> skip bearish rotation")
+                    else:
+                        # Use empty sector_ltps for now (needs live IDX fetch)
+                        sector_ltps = {}
+                        try:
+                            from sector_rotation import SECTOR_INDICES as _SIDX
+                            for _name, _sid in _SIDX.items():
+                                if str(_sid).startswith('REPLACE'):
+                                    continue
+                                try:
+                                    import time as _t; _t.sleep(0.3)
+                                    _d = self.dhan.get_ohlc_intraday(str(_sid), 'IDX_I', '5')
+                                    _c = _d.get('close') if isinstance(_d, dict) else None
+                                    _lt = float(_c[-1]) if _c else 0
+                                    if _lt and _lt > 0:
+                                        sector_ltps[_name] = _lt
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+                        leading = find_leading_sectors(sector_ltps, sector_prev, nifty_ret)
+                        log.info(f"  Leading sectors: {leading or []}")
+                        if not leading:
+                            log.info("  No bullish sector -> NO TRADE (capital safe)")
+                            self.candidates = []
+                        else:
+                            kept = []
+                            for c in self.candidates:
+                                ok, reason = is_sector_eligible(
+                                    c.get("ticker", ""), leading, c.get("gap_pct", 0),
+                                    sector_ltps, sector_prev)
+                                log.info(f"    {c.get(chr(116)+chr(105)+chr(99)+chr(107)+chr(101)+chr(114))}: {reason}")
+                                if ok:
+                                    c["_bearish_rotation"] = True
+                                    c["_size_mult"] = getattr(config, "BEARISH_SIZE_MULT", 0.5)
+                                    kept.append(c)
+                            max_bear = getattr(config, "BEARISH_MAX_CANDIDATES", 3)
+                            self.candidates = kept[:max_bear]
+                            log.info(f"  Bearish candidates: {[c.get(chr(116)+chr(105)+chr(99)+chr(107)+chr(101)+chr(114)) for c in self.candidates]}")
+                except Exception as e:
+                    log.warning(f"Bearish rotation error -> skipping: {e}")
+                    self.candidates = []
+
+                    self.record_orb()  # Fallback to REST
+                if not self.orb_data:
+                    if not self.no_trade_notified:
+                        self.email.notify_no_trade("No valid ORB ranges found")
+                        self.no_trade_notified = True
+                    return
+
+                # Send shortlist email
+            try:
+                self.nifty_data['mode'] = market_mode
+                self.nifty_data['total_watchlist'] = len(self.watchlist)
+                shortlist_data = collect_shortlist_data(
+                    self.candidates, self.rejected_stocks,
+                    self.orb_data, self.nifty_data, self.funnel_counts
+                )
+                shortlist_html = build_shortlist_email(shortlist_data)
+                from datetime import datetime as dt
+                shortlist_html = shortlist_html.replace('{timestamp}', now_ist().strftime('%Y-%m-%d %H:%M IST'))
+                self.email.send(f"📋 Shortlist: {len(self.candidates)} candidates | {now_ist().strftime('%d %b')}", shortlist_html)
+                log.info("Shortlist email sent")
+            except Exception as e:
+                log.warning(f"Shortlist email failed: {e}")
+
+            # PHASE 5: Main trading loop
+            log.info("═══ SCANNING FOR BREAKOUTS ═══")
+            breakout_deadline = time.time() + 19800   # ROOT FIX: 90min->5.5h; real gate is ist_time(15,15)/ENTRY_CUTOFF
+            while now_ist() < ist_time(15, 15):
+                current_time = now_ist()
+                if time.time() > breakout_deadline and not self.active_trade:
+                    log.warning("Breakout scan timeout (30 min) - no breakout found")
+                    break
+
+                # Dead zone check
+                if ist_time(12, 30) <= current_time < ist_time(13, 45):
+                    if not self.active_trade:
+                        log.info("Dead zone (12:30-13:45). Sleeping...")
+                        time.sleep(300)  # 5 min sleep in dead zone
+                        continue
+
+                # If we have an active trade, monitor it
+                if self.active_trade:
+                    self.monitor_active_trade()
+                    # On TRENDING days, allow 2nd position if 1st is profitable
+                    if getattr(self, "regime", "NORMAL").startswith("TRENDING") and self.trades_today < 2:
+                        r_current = 0
+                        try:
+                            ep = float(self.active_trade.get("entry_price", 0))
+                            rv = float(self.active_trade.get("r_value", 1))
+                            sid = self.active_trade.get("security_id", "")
+                            ld = self.fetch_ltp_concurrent([str(sid)])
+                            cl = ld.get(str(sid), ep)
+                            r_current = (cl - ep) / rv if rv > 0 else 0
+                        except: pass
+                        if r_current >= 1.0:
+                            log.info(f"TRENDING: 1st trade at +{r_current:.1f}R, scanning for 2nd position...")
+                            pass  # Fall through to scanning below
+                        else:
+                            time.sleep(config.MONITOR_INTERVAL_SECONDS)
+                            continue
+                    else:
+                        time.sleep(config.MONITOR_INTERVAL_SECONDS)
+                        continue
+
+                # Check if we can trade
+                if self.consecutive_losses >= config.MAX_CONSECUTIVE_LOSSES:
+                    log.info("Loss lock active. Waiting for EOD.")
+                    time.sleep(300)
+                    continue
+
+                if balance and self.daily_pnl <= -(balance * config.DAILY_LOSS_LIMIT_PCT / 100):
+                    log.info("Daily loss limit hit. Waiting for EOD.")
+                    time.sleep(300)
+                    continue
+
+                # Entry cutoff
+                if current_time >= ist_time(14, 45):
+                    log.info("Past entry cutoff (14:45). Waiting for EOD.")
+                    time.sleep(60)
+                    continue
+
+                # Scan for breakout
+                result = self.scan_for_breakout()
+                if result:
+                    candidate, ltp, score = result
+                    log.info(f"🎯 BREAKOUT DETECTED: {candidate['ticker']} @ ₹{ltp:.2f} Score={score:.3f}")
+                    # 30-second confirmation: verify price holds above ORB high
+                    sid = candidate['security_id']
+                    orb = self.orb_data.get(sid, {})
+                    orb_high = orb.get('high', ltp)
+                    # Rank-gated buffer: top ranked = easier trigger
+                    rank_pos = next((idx for idx, c in enumerate(self.candidates) if c.get("security_id") == candidate.get("security_id")), 5)
+                    buffer = orb_high * (0.05 + rank_pos * 0.03) / 100  # Rank1=0.08%, Rank5=0.20%
+                    confirmed = True
+                    log.info(f"  Confirming breakout for 30 seconds...")
+                    for check in range(3):  # 3 checks x 10 seconds = 30 seconds
+                        time.sleep(10)
+                        confirm_ltp = self.get_live_price(sid)
+                        if confirm_ltp <= orb_high + buffer:
+                            log.info(f"  ❌ Fakeout: {candidate['ticker']} fell back to ₹{confirm_ltp:.2f} (ORB high ₹{orb_high:.2f})")
+                            confirmed = False
+                            break
+                        log.info(f"  ✓ Check {check+1}/3: ₹{confirm_ltp:.2f} > ORB high ₹{orb_high:.2f}")
+                    if not confirmed:
+                        log.info(f"  Skipping {candidate['ticker']} - failed 30s confirmation")
+                        continue
+                    # Use latest price for entry (not stale 30s-ago price)
+                    ltp = self.get_live_price(sid)
+                    log.info(f"✅ CONFIRMED BREAKOUT: {candidate['ticker']} @ ₹{ltp:.2f} (held 30s above ORB)")
+                    success = self.place_entry(candidate, ltp, score)
+                    if success:
+                        continue  # Go to monitoring mode
+
+                # Adaptive scan interval
+                interval = self.get_scan_interval()
+                time.sleep(interval)
+
+            # PHASE 6: End of day
+            if self.active_trade:
+                ltp_data = self.fetch_ltp_concurrent([self.active_trade['security_id']])
+                exit_ltp = ltp_data.get(str(self.active_trade['security_id']), 0)
+                if exit_ltp > 0:
+                    self.exit_trade(exit_ltp, "MANDATORY_EXIT_EOD")
+
+            # EOD Summary
+            final_balance = self.dhan.get_balance() or balance
+            self.email.notify_eod(self.trades_today, self.daily_pnl, final_balance)
+            self.stop_websocket()
+            log.info(f"═══ EOD: Trades={self.trades_today}, PnL=₹{self.daily_pnl:.2f}, "
+                     f"Balance=₹{final_balance:,.2f} ═══")
+
+        except Exception as e:
+            log.error(f"CRITICAL ERROR: {e}", exc_info=True)
+            self.email.notify_error(str(e))
+            # Emergency exit if we have a position
+            if self.active_trade:
+                try:
+                    sid = self.active_trade['security_id']
+                    qty = int(self.active_trade['qty'])
+                    _pos = self.dhan.get_positions()
+                    _live = 0
+                    if isinstance(_pos, list):
+                        for _p in _pos:
+                            if str(_p.get("securityId", "")) == str(sid):
+                                _live = int(_p.get("netQty", 0) or 0)
+                                break
+                    if _live > 0:
+                        self.dhan.place_order(int(sid), min(qty, _live), 0, "SELL", "MARKET")
+                        log.info(f"Emergency exit placed ({_live} sh)")
+                    else:
+                        log.info(f"Emergency exit SKIPPED - no live long (netQty={_live})")
+                except Exception:
+                    pass
+
+
+# ═══ ENTRY POINT ═══
+if __name__ == "__main__":
+    bot = TradingBot()
+    bot.run()

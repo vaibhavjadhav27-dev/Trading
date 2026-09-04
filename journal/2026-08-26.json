@@ -1,0 +1,14 @@
+{
+  "trade": {
+    "exit": {
+      "symbol": "AXISBANK",
+      "side": "LONG",
+      "qty": 1,
+      "entry": 1257.1,
+      "exit": 1256.0,
+      "pnl_pct": -0.08750298305623333,
+      "reason": "MANDATORY_EOD",
+      "exit_time": "2026-08-26T15:05:00.672720"
+    }
+  }
+}

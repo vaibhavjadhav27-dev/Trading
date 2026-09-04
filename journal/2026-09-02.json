@@ -1,0 +1,14 @@
+{
+  "trade": {
+    "exit": {
+      "symbol": "INDOCO",
+      "side": "LONG",
+      "qty": 52,
+      "entry": 275.03,
+      "exit": 274.0,
+      "pnl_pct": -0.3745045994982267,
+      "reason": "MANDATORY_EOD",
+      "exit_time": "2026-09-02T15:05:23.611355"
+    }
+  }
+}

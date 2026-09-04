@@ -1,0 +1,1427 @@
+"""
+V10.1 Strategy Patch — Unified Entry/Exit/Risk Framework
+=========================================================
+
+Replaces V8.5.5 Early Entry + Profit Protection Patch.
+
+Architecture:
+  - V10 base: Regime classification, multi-setup entries, expected-R filter,
+    room-to-run anti-chase, timing/quality score separation
+  - V10.1 amendment: Three-way move classification (EARLY_ENTRY / LATE_CONTINUATION / EXHAUSTED)
+    with graduated 30/70 position sizing
+  - Giveback-based profit management (TIGHTEN, not auto-exit on MOM5)
+  - 7 MCX session modes matching actual market structure
+  - 2% daily loss lock (replaces 2-consecutive-loss halt)
+
+Backward Compatibility:
+  - acceleration_score(snapshot_dict) → dict (same interface as V8.5.5)
+  - profit_fading_exit(snapshot_dict) → dict (same interface as V8.5.5)
+  - New: evaluate_entry(snapshot) → Signal | None
+  - New: manage_position(position, price) → Action
+  - New: classify_move_stage(snapshot, direction) → MoveStage
+
+Deployment:
+  SCP to server, update imports in trading_bot_v84.py
+
+Author: Expert V10 + V10.1 Amendment
+Version: 10.1.0
+Date: 2026-08-26
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, time, date
+from enum import Enum
+from typing import Optional, Dict, Any, List, Tuple
+
+log = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════
+# V8.5.5 BACKWARD-COMPAT STUBS (used by trading_bot_v84.py import line)
+# ═══════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ExitState:
+    """Legacy V8.5.5 peak-tracking container.
+    
+    Used at line 396 of trading_bot_v84.py:
+        exit_state = ExitState(peak_price=peak, best_r=float(p.get("best_r", 0)))
+        update_peak(exit_state, side, px)
+    """
+    peak_price: float = 0.0
+    best_r: float = 0.0
+    trough_price: float = 0.0
+
+
+def update_peak(exit_state: ExitState, side: str, price: float) -> None:
+    """Legacy V8.5.5 peak updater.
+    
+    Updates ExitState in-place with new peak/trough based on current price.
+    Called every cycle in monitor_positions (line 397).
+    """
+    if side == "BUY":
+        if price > exit_state.peak_price:
+            exit_state.peak_price = price
+        if exit_state.trough_price == 0 or price < exit_state.trough_price:
+            exit_state.trough_price = price
+    else:  # SELL/SHORT
+        if exit_state.peak_price == 0 or price < exit_state.peak_price:
+            exit_state.peak_price = price
+        if price > exit_state.trough_price:
+            exit_state.trough_price = price
+
+
+def validate_entry(candidate: Dict[str, Any], config=None) -> Tuple[bool, str]:
+    """Legacy V8.5.5 entry validator.
+    
+    In V10.1, validation is integrated into acceleration_score().
+    This stub always returns (True, "V10.1_PASSTHROUGH") so existing
+    call sites don't break. Real filtering happens in make_signal().
+    """
+    return True, "V10.1_PASSTHROUGH"
+
+
+@dataclass
+class EarlyConfig:
+    """Legacy V8.5.5 configuration container.
+    
+    In V10.1, config is module-level constants. This stub exists
+    purely for import compatibility.
+    """
+    min_score: float = 75.0
+    min_rvol: float = 2.0
+    position_pct: float = 0.30
+    confirmation_r: float = 0.5
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════
+
+DAILY_LOSS_LOCK_PCT = 0.02          # 2% daily loss locks new entries
+NSE_NEW_ENTRY_CUTOFF = time(14, 30) # No fresh entries after 14:30 IST
+NSE_MANDATORY_EXIT = time(15, 5)    # Hard square-off at 15:05 IST
+MAX_SPREAD_TICKS = 3                # Reject if spread > 3 ticks
+MIN_EXPECTED_R = 1.5                # Minimum expected reward:risk
+MIN_TIMING_SCORE = 55               # Minimum timing score for normal entry
+MIN_ROOM_ATR = 0.75                 # Minimum room-to-run in ATR units
+MIN_BASE_SCORE = 65                 # Minimum quality/opportunity score
+EARLY_ENTRY_MIN_SCORE = 75          # Higher bar for early entries
+EARLY_ENTRY_POSITION_PCT = 0.30     # 30% initial position for early entries
+CONFIRMATION_ADD_PCT = 0.70         # Add 70% on confirmation
+EARLY_ENTRY_RVOL_MIN = 2.0         # Minimum RVOL for early entry qualification
+EARLY_ENTRY_RS_MIN = 1.0           # Minimum stock RS for early entry
+
+# Position persistence file
+POSITION_STATE_FILE = "v10_positions.json"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# ENUMERATIONS
+# ═══════════════════════════════════════════════════════════════════════
+
+class Segment(str, Enum):
+    NSE_INTRADAY = "NSE_INTRADAY"
+    MCX = "MCX"
+    SWING = "SWING"
+
+
+class PositionSource(str, Enum):
+    BOT = "BOT"
+    MANUAL = "MANUAL"
+    EXTERNAL = "EXTERNAL"
+    UNKNOWN = "UNKNOWN"
+
+
+class Regime(str, Enum):
+    TREND_BULL = "TREND_BULL"
+    TREND_BEAR = "TREND_BEAR"
+    RANGE = "RANGE"
+    HIGH_VOL_CHOP = "HIGH_VOL_CHOP"
+    SHOCK = "SHOCK"
+    UNKNOWN = "UNKNOWN"
+
+
+class Setup(str, Enum):
+    ORB_BREAKOUT = "ORB_BREAKOUT"
+    ORB_BREAKDOWN = "ORB_BREAKDOWN"
+    VWAP_RECLAIM = "VWAP_RECLAIM"
+    VWAP_REJECTION = "VWAP_REJECTION"
+    MOMENTUM_CONTINUATION = "MOMENTUM_CONTINUATION"
+    PULLBACK_CONTINUATION = "PULLBACK_CONTINUATION"
+    BREAKOUT_RETEST = "BREAKOUT_RETEST"
+    MEAN_REVERSION = "MEAN_REVERSION"
+    SWING_BREAKOUT = "SWING_BREAKOUT"
+    SWING_PULLBACK = "SWING_PULLBACK"
+
+
+class MoveStage(str, Enum):
+    """V10.1 Three-way move classification."""
+    EARLY_ENTRY = "EARLY_ENTRY"             # Extended but strong — enter 30%
+    LATE_CONTINUATION = "LATE_CONTINUATION"  # Extended but healthy — full entry OK
+    EXHAUSTED = "EXHAUSTED"                  # Edge consumed — reject
+    NORMAL = "NORMAL"                        # Not extended — standard entry
+
+
+class EntryType(str, Enum):
+    NORMAL = "NORMAL"           # Full position, standard entry
+    EARLY = "EARLY"             # 30% position, await confirmation
+    CONTINUATION = "CONTINUATION"  # Adding to early entry on confirmation
+
+
+class PositionAction(str, Enum):
+    HOLD = "HOLD"
+    TIGHTEN = "TIGHTEN"         # Tighten protection (NOT auto-exit)
+    EXIT = "EXIT"               # Hard stop hit or mandatory close
+    CONFIRM_ADD = "CONFIRM_ADD" # Early entry confirmed — add remaining size
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DATA CLASSES
+# ═══════════════════════════════════════════════════════════════════════
+
+@dataclass
+class Snapshot:
+    """Market data snapshot for a single instrument at a point in time."""
+    symbol: str
+    ts: datetime
+    price: float
+    atr: float
+    vwap: float
+    # Regime indicators
+    adx: float = 20.0
+    adx_slope: float = 0.0
+    choppiness: float = 50.0
+    atr_percentile: float = 50.0
+    # Momentum/Strength
+    rsi: float = 50.0
+    rvol: float = 1.0
+    momentum_5m: float = 0.0
+    momentum_15m: float = 0.0
+    sector_rs: float = 0.0
+    stock_rs: float = 0.0
+    volume_acceleration: float = 0.0
+    # Microstructure
+    oi_change: float = 0.0
+    spread_ticks: float = 0.0
+    # Levels
+    orb_high: Optional[float] = None
+    orb_low: Optional[float] = None
+    prior_high: Optional[float] = None
+    prior_low: Optional[float] = None
+    # Candle structure (for exhaustion detection)
+    last_candle_body_pct: float = 0.5   # body/range ratio of last candle
+    upper_wick_pct: float = 0.0         # upper wick / range
+    lower_wick_pct: float = 0.0         # lower wick / range
+
+
+@dataclass
+class Signal:
+    """Trading signal with full context."""
+    symbol: str
+    segment: Segment
+    setup: Setup
+    direction: str          # "BUY" or "SELL"
+    entry: float
+    stop: float
+    score: float            # Base quality score (0-100)
+    timing_score: float     # Timing quality (0-100)
+    room_atr: float         # Room-to-run in ATR units
+    expected_r: float       # Expected reward:risk ratio
+    regime: Regime
+    move_stage: MoveStage   # V10.1: EARLY/LATE_CONT/EXHAUSTED/NORMAL
+    entry_type: EntryType   # V10.1: NORMAL/EARLY/CONTINUATION
+    position_pct: float     # 0.30 for early, 1.0 for normal
+    reason: str
+
+
+@dataclass
+class ManagedPosition:
+    """Position with full lifecycle tracking for V10.1 management."""
+    symbol: str
+    segment: Segment
+    side: str               # "BUY" or "SELL"
+    quantity: int
+    entry_price: float
+    stop_price: float       # Current stop (may be tightened)
+    initial_stop: float     # Original stop (immutable for R calculation)
+    entry_time: datetime
+    # V10.1 fields
+    source: PositionSource = PositionSource.BOT
+    entry_type: EntryType = EntryType.NORMAL
+    position_pct: float = 1.0       # 0.30 for early entries
+    confirmed: bool = True          # False for early entries awaiting confirmation
+    # Peak/Giveback tracking
+    peak_price: float = 0.0
+    trough_price: float = 0.0
+    peak_r: float = 0.0
+    current_r: float = 0.0
+    giveback_r: float = 0.0
+    mfe: float = 0.0               # Max favorable excursion (price units)
+    mae: float = 0.0               # Max adverse excursion (price units)
+    # Broker state
+    entry_order_id: Optional[str] = None
+    stop_order_id: Optional[str] = None
+    # Tighten history
+    last_tighten_r: float = 0.0    # Last R level where we tightened
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def risk_per_share(self) -> float:
+        """Immutable risk based on initial stop."""
+        return max(abs(self.entry_price - self.initial_stop), 0.01)
+
+    def to_dict(self) -> dict:
+        """Serialize for persistence."""
+        d = {
+            "symbol": self.symbol, "segment": self.segment.value,
+            "side": self.side, "quantity": self.quantity,
+            "entry_price": self.entry_price, "stop_price": self.stop_price,
+            "initial_stop": self.initial_stop,
+            "entry_time": self.entry_time.isoformat(),
+            "source": self.source.value, "entry_type": self.entry_type.value,
+            "position_pct": self.position_pct, "confirmed": self.confirmed,
+            "peak_price": self.peak_price, "trough_price": self.trough_price,
+            "peak_r": self.peak_r, "current_r": self.current_r,
+            "giveback_r": self.giveback_r, "mfe": self.mfe, "mae": self.mae,
+            "entry_order_id": self.entry_order_id,
+            "stop_order_id": self.stop_order_id,
+            "last_tighten_r": self.last_tighten_r,
+            "metadata": self.metadata,
+        }
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ManagedPosition":
+        """Deserialize from persistence."""
+        return cls(
+            symbol=d["symbol"], segment=Segment(d["segment"]),
+            side=d["side"], quantity=d["quantity"],
+            entry_price=d["entry_price"], stop_price=d["stop_price"],
+            initial_stop=d["initial_stop"],
+            entry_time=datetime.fromisoformat(d["entry_time"]),
+            source=PositionSource(d.get("source", "BOT")),
+            entry_type=EntryType(d.get("entry_type", "NORMAL")),
+            position_pct=d.get("position_pct", 1.0),
+            confirmed=d.get("confirmed", True),
+            peak_price=d.get("peak_price", 0.0),
+            trough_price=d.get("trough_price", 0.0),
+            peak_r=d.get("peak_r", 0.0),
+            current_r=d.get("current_r", 0.0),
+            giveback_r=d.get("giveback_r", 0.0),
+            mfe=d.get("mfe", 0.0), mae=d.get("mae", 0.0),
+            entry_order_id=d.get("entry_order_id"),
+            stop_order_id=d.get("stop_order_id"),
+            last_tighten_r=d.get("last_tighten_r", 0.0),
+            metadata=d.get("metadata", {}),
+        )
+
+
+@dataclass
+class AccountRisk:
+    """Daily account risk state."""
+    equity: float
+    realised_pnl_today: float
+    unrealised_pnl: float
+    open_stop_risk: float
+    locked: bool = False
+
+    @property
+    def total_loss(self) -> float:
+        return max(0.0, -(self.realised_pnl_today + self.unrealised_pnl))
+
+    @property
+    def loss_pct(self) -> float:
+        return self.total_loss / self.equity if self.equity > 0 else 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# RISK GOVERNOR
+# ═══════════════════════════════════════════════════════════════════════
+
+class RiskGovernor:
+    """
+    V10 Risk Governor — replaces 2-consecutive-loss halt.
+
+    Rules:
+      - 2% daily account loss → lock NEW entries only
+      - Existing positions remain under normal management
+      - Locked state persists until next trading day
+    """
+
+    def __init__(self, limit_pct: float = DAILY_LOSS_LOCK_PCT):
+        self.limit_pct = limit_pct
+
+    def evaluate(self, risk: AccountRisk) -> AccountRisk:
+        """Update lock state based on current P&L."""
+        if not risk.locked and risk.loss_pct >= self.limit_pct:
+            risk.locked = True
+            log.warning(f"RISK GOVERNOR: Daily loss {risk.loss_pct:.2%} >= {self.limit_pct:.0%} — NEW ENTRIES LOCKED")
+        return risk
+
+    def allow_new_entry(self, risk: AccountRisk) -> bool:
+        """Can we open a new position?"""
+        return not self.evaluate(risk).locked
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# REGIME CLASSIFICATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def classify_regime(s: Snapshot) -> Regime:
+    """
+    Classify market regime from snapshot indicators.
+
+    Uses ADX (trend strength), choppiness index, ATR percentile,
+    and volume acceleration for shock detection.
+    """
+    # SHOCK: extreme volatility + volume surge
+    if s.atr_percentile >= 95 and s.volume_acceleration >= 2:
+        return Regime.SHOCK
+
+    # TREND: ADX confirms directional move
+    if s.adx >= 25 and s.adx_slope >= 0:
+        if s.price > s.vwap and s.momentum_15m > 0:
+            return Regime.TREND_BULL
+        if s.price < s.vwap and s.momentum_15m < 0:
+            return Regime.TREND_BEAR
+
+    # RANGE: low ADX, moderate choppiness, normal volatility
+    if s.adx < 18 and 35 <= s.choppiness <= 70 and s.atr_percentile < 80:
+        return Regime.RANGE
+
+    # HIGH_VOL_CHOP: elevated volatility but no trend
+    if s.atr_percentile >= 80:
+        return Regime.HIGH_VOL_CHOP
+
+    return Regime.UNKNOWN
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SCORING FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════
+
+def room_atr(s: Snapshot, direction: str) -> float:
+    """
+    Calculate remaining room-to-run in ATR units.
+
+    Room = how much further price can travel before hitting
+    the next major level (prior high/low).
+
+    Returns 0-2.0 (2.0 = maximum room available).
+    """
+    if s.atr <= 0:
+        return 0.0
+
+    level = s.prior_high if direction == "BUY" else s.prior_low
+    if level is None:
+        return 2.0  # No known level = assume full room
+
+    consumed = max(0.0, s.price - level) if direction == "BUY" else max(0.0, level - s.price)
+    return max(0.0, 2.0 - consumed / s.atr)
+
+
+def base_score(s: Snapshot, direction: str) -> float:
+    """
+    Base opportunity quality score (0-100).
+
+    Measures: VWAP alignment, momentum, RVOL, RS, sector, volume acceleration.
+    This answers: "Is this a GOOD stock to trade right now?"
+    """
+    align = s.price > s.vwap if direction == "BUY" else s.price < s.vwap
+    m15 = s.momentum_15m if direction == "BUY" else -s.momentum_15m
+    m5 = s.momentum_5m if direction == "BUY" else -s.momentum_5m
+    rs = s.stock_rs if direction == "BUY" else -s.stock_rs
+    sec = s.sector_rs if direction == "BUY" else -s.sector_rs
+
+    score = (
+        (15 if align else 0) +
+        min(20, max(0, m15 * 8)) +
+        min(15, max(0, m5 * 8)) +
+        min(15, max(0, (s.rvol - 1) * 7)) +
+        min(15, max(0, rs * 5)) +
+        min(10, max(0, sec * 4)) +
+        min(10, max(0, s.volume_acceleration * 3))
+    )
+    return min(100, max(0, score))
+
+
+def timing_score(s: Snapshot, direction: str) -> float:
+    """
+    Timing quality score (0-100).
+
+    Measures: Is NOW the right moment to enter?
+    Penalizes over-extension from VWAP (but V10.1 overrides this
+    for strong developing setups via classify_move_stage).
+    """
+    mom = s.momentum_5m if direction == "BUY" else -s.momentum_5m
+    rs = s.stock_rs if direction == "BUY" else -s.stock_rs
+    room = room_atr(s, direction)
+
+    score = (
+        45 +
+        min(20, max(-15, mom * 10)) +
+        min(15, max(-10, rs * 5)) +
+        min(20, room * 10)
+    )
+
+    # Penalty for extreme VWAP extension
+    if s.atr > 0 and abs(s.price - s.vwap) / s.atr > 2:
+        score -= 20
+
+    return max(0, min(100, score))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V10.1 MOVE STAGE CLASSIFICATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def classify_move_stage(s: Snapshot, direction: str) -> MoveStage:
+    """
+    V10.1 Three-way move classification.
+
+    KEY PRINCIPLE: Don't ask "has it moved?" — ask "has it EXHAUSTED its edge?"
+
+    For ORB-based setups (MCX, NSE intraday):
+      Uses ATR-normalized distance from ORB boundary.
+      < 0.5 ATR   → NORMAL (fresh breakout)
+      0.5-1.0 ATR → check for EARLY_ENTRY strength
+      1.0-1.5 ATR → LATE_CONTINUATION if momentum confirms
+      > 1.5 ATR   → EXHAUSTED (with momentum/volume exceptions)
+
+    For non-ORB setups: uses VWAP extension (original logic).
+
+    Returns:
+        NORMAL          — Not extended, standard entry OK
+        EARLY_ENTRY     — Extended but exceptionally strong structure → 30% size
+        LATE_CONTINUATION — Extended but healthy trend continuation → full size OK
+        EXHAUSTED       — Edge consumed, momentum dying → REJECT
+    """
+    if s.atr <= 0:
+        return MoveStage.EXHAUSTED
+
+    # ── ORB-based extension (preferred for breakout setups) ──
+    orb_boundary = None
+    if direction == "BUY" and s.orb_high is not None and s.price > s.orb_high:
+        orb_boundary = s.orb_high
+    elif direction == "SELL" and s.orb_low is not None and s.price < s.orb_low:
+        orb_boundary = s.orb_low
+
+    if orb_boundary is not None:
+        # ATR-normalized distance from ORB boundary
+        extension_atr = abs(s.price - orb_boundary) / s.atr
+
+        # Direction-aligned indicators
+        mom5 = s.momentum_5m if direction == "BUY" else -s.momentum_5m
+        mom15 = s.momentum_15m if direction == "BUY" else -s.momentum_15m
+        rs = s.stock_rs if direction == "BUY" else -s.stock_rs
+        exhaustion_count = 0
+        if mom5 <= 0: exhaustion_count += 1
+        if mom15 <= 0: exhaustion_count += 1
+        if s.rvol < 1.0: exhaustion_count += 1
+        if rs < 0: exhaustion_count += 1
+        if s.volume_acceleration < 0.5: exhaustion_count += 1
+        if direction == "BUY" and s.upper_wick_pct > 0.5: exhaustion_count += 1
+        if direction == "SELL" and s.lower_wick_pct > 0.5: exhaustion_count += 1
+
+        # FRESH — just crossed ORB, fully actionable
+        if extension_atr < 0.5:
+            return MoveStage.NORMAL
+
+        # EXTENDED BUT TRADABLE — needs strength confirmation
+        elif extension_atr < 1.0:
+            bscore = base_score(s, direction)
+            vwap_aligned = (s.price > s.vwap) if direction == "BUY" else (s.price < s.vwap)
+            if (bscore >= EARLY_ENTRY_MIN_SCORE
+                    and s.rvol >= EARLY_ENTRY_RVOL_MIN
+                    and rs >= EARLY_ENTRY_RS_MIN
+                    and mom5 > 0
+                    and mom15 > 0
+                    and vwap_aligned
+                    and s.volume_acceleration > 1.0):
+                return MoveStage.EARLY_ENTRY
+            elif mom5 > 0 and mom15 > 0 and s.rvol >= 1.2:
+                return MoveStage.LATE_CONTINUATION
+            else:
+                return MoveStage.EXHAUSTED
+
+        # CONTINUATION ZONE — only if momentum strongly confirms
+        elif extension_atr < 1.5:
+            if mom5 > 0 and mom15 > 0 and s.rvol >= 1.5 and rs > 0:
+                return MoveStage.LATE_CONTINUATION
+            else:
+                return MoveStage.EXHAUSTED
+
+        # > 1.5 ATR — normally late, but an exceptionally strong *developing*
+        # move may still be actionable.  This is deliberately a REDUCED-SIZE
+        # entry, not a full-size chase.  It addresses the IDBI-style case where
+        # the move was already underway but participation/acceleration remained
+        # strong when the engine finally evaluated it.
+        else:
+            bscore = base_score(s, direction)
+            vwap_aligned = (s.price > s.vwap) if direction == "BUY" else (s.price < s.vwap)
+            if (bscore >= EARLY_ENTRY_MIN_SCORE
+                    and s.rvol >= 2.5
+                    and rs >= EARLY_ENTRY_RS_MIN
+                    and mom5 > 1.5
+                    and mom15 > 0.75
+                    and s.volume_acceleration > 1.5
+                    and vwap_aligned
+                    and exhaustion_count <= 1):
+                return MoveStage.EARLY_ENTRY
+            if (mom5 > 2.0 and mom15 > 1.0
+                    and s.rvol >= 3.0
+                    and s.volume_acceleration > 2.0
+                    and exhaustion_count <= 1):
+                return MoveStage.LATE_CONTINUATION
+            return MoveStage.EXHAUSTED
+
+    # ── VWAP-based extension (non-ORB setups) ──
+    extension = abs(s.price - s.vwap) / s.atr
+
+    # Not extended — normal entry
+    if extension <= 2.0:
+        return MoveStage.NORMAL
+
+    # Extended (> 2 ATR from VWAP) — classify further
+    mom5 = s.momentum_5m if direction == "BUY" else -s.momentum_5m
+    mom15 = s.momentum_15m if direction == "BUY" else -s.momentum_15m
+    rs = s.stock_rs if direction == "BUY" else -s.stock_rs
+    sec_rs = s.sector_rs if direction == "BUY" else -s.sector_rs
+
+    # === EXHAUSTION SIGNALS ===
+    exhaustion_count = 0
+    if mom5 <= 0:
+        exhaustion_count += 1
+    if mom15 <= 0:
+        exhaustion_count += 1
+    if s.rvol < 1.0:
+        exhaustion_count += 1
+    if rs < 0:
+        exhaustion_count += 1
+    if s.volume_acceleration < 0.5:
+        exhaustion_count += 1
+    if direction == "BUY" and s.upper_wick_pct > 0.5:
+        exhaustion_count += 1
+    elif direction == "SELL" and s.lower_wick_pct > 0.5:
+        exhaustion_count += 1
+
+    # 3+ exhaustion signals → REJECT
+    if exhaustion_count >= 3:
+        return MoveStage.EXHAUSTED
+
+    # === STRONG DEVELOPING SETUP (EARLY_ENTRY path) ===
+    bscore = base_score(s, direction)
+    vwap_aligned = (s.price > s.vwap) if direction == "BUY" else (s.price < s.vwap)
+
+    if (bscore >= EARLY_ENTRY_MIN_SCORE
+            and s.rvol >= EARLY_ENTRY_RVOL_MIN
+            and rs >= EARLY_ENTRY_RS_MIN
+            and mom5 > 0
+            and mom15 > 0
+            and vwap_aligned
+            and s.volume_acceleration > 1.0):
+        return MoveStage.EARLY_ENTRY
+
+    # === LATE CONTINUATION ===
+    if (mom5 > 0
+            and mom15 > 0
+            and s.rvol >= 1.5
+            and rs > 0
+            and exhaustion_count <= 1):
+        return MoveStage.LATE_CONTINUATION
+
+    # Default: extended with mixed signals → EXHAUSTED (conservative)
+    return MoveStage.EXHAUSTED
+
+# ═══════════════════════════════════════════════════════════════════════
+# SIGNAL GENERATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def make_signal(
+    s: Snapshot,
+    segment: Segment,
+    setup: Setup,
+    direction: str,
+    stop_mult: float = 1.5,
+    min_score: float = MIN_BASE_SCORE,
+    min_expected_r: float = MIN_EXPECTED_R,
+    room_multiplier: float = 2.0,
+) -> Optional[Signal]:
+    """
+    Create a trading signal if all quality gates pass.
+
+    V10.1 flow:
+      1. Reject in unsafe regimes (SHOCK, UNKNOWN, HIGH_VOL_CHOP)
+      2. Check spread/ATR validity
+      3. Compute scores
+      4. Classify move stage (NORMAL / EARLY / CONTINUATION / EXHAUSTED)
+      5. Apply appropriate gates based on move stage
+      6. Calculate expected R
+      7. Return Signal with entry_type and position_pct
+    """
+    # --- Regime gate ---
+    regime = classify_regime(s)
+    if regime in (Regime.SHOCK, Regime.UNKNOWN, Regime.HIGH_VOL_CHOP):
+        return None
+
+    # --- Basic validity ---
+    if s.atr <= 0 or s.spread_ticks > MAX_SPREAD_TICKS:
+        return None
+
+    # --- Score computation ---
+    bscore = base_score(s, direction)
+    tscore = timing_score(s, direction)
+    room = room_atr(s, direction)
+
+    # --- V10.1: Classify move stage ---
+    stage = classify_move_stage(s, direction)
+
+    if stage == MoveStage.EXHAUSTED:
+        return None  # Hard reject
+
+    # --- Apply gates based on move stage ---
+    if stage == MoveStage.NORMAL:
+        # Standard V10 gates
+        if bscore < min_score or tscore < MIN_TIMING_SCORE or room < MIN_ROOM_ATR:
+            return None
+        entry_type = EntryType.NORMAL
+        position_pct = 1.0
+
+    elif stage == MoveStage.EARLY_ENTRY:
+        # V10.1: Higher bar for quality, relaxed timing
+        # The timing_score penalty from extension is OVERRIDDEN here because
+        # we've already confirmed structural strength in classify_move_stage()
+        if bscore < EARLY_ENTRY_MIN_SCORE:
+            return None
+        # Room may be low but we accept it because structure is strong
+        entry_type = EntryType.EARLY
+        position_pct = EARLY_ENTRY_POSITION_PCT  # 30%
+
+    elif stage == MoveStage.LATE_CONTINUATION:
+        # V10.1: Full entry allowed, but require quality score
+        if bscore < min_score:
+            return None
+        # Don't penalize timing for extension since momentum confirms
+        entry_type = EntryType.NORMAL
+        position_pct = 1.0
+
+    else:
+        return None  # Safety fallback
+
+    # --- Expected R calculation ---
+    risk = stop_mult * s.atr
+    if risk <= 0:
+        return None
+    expected_r = (room * room_multiplier * s.atr) / risk if room > 0 else 0
+
+    # For early entries, we accept lower expected_r since we're entering small
+    min_r = min_expected_r * 0.6 if entry_type == EntryType.EARLY else min_expected_r
+    if expected_r < min_r:
+        return None
+
+    # --- Stop calculation ---
+    stop = s.price - risk if direction == "BUY" else s.price + risk
+
+    reason_parts = [f"setup={setup.value}", f"stage={stage.value}",
+                    f"score={bscore:.0f}", f"timing={tscore:.0f}",
+                    f"room={room:.2f}", f"expR={expected_r:.2f}"]
+
+    return Signal(
+        symbol=s.symbol, segment=segment, setup=setup, direction=direction,
+        entry=s.price, stop=round(stop, 2), score=round(bscore, 2),
+        timing_score=round(tscore, 2), room_atr=round(room, 3),
+        expected_r=round(expected_r, 2), regime=regime,
+        move_stage=stage, entry_type=entry_type, position_pct=position_pct,
+        reason=" | ".join(reason_parts),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# NSE INTRADAY ENTRY
+# ═══════════════════════════════════════════════════════════════════════
+
+def nse_intraday(s: Snapshot) -> Optional[Signal]:
+    """
+    NSE intraday signal generation.
+
+    Multiple setups: ORB breakout/breakdown, momentum continuation,
+    VWAP reclaim/rejection, mean reversion in range.
+
+    Cutoff: No new entries after 14:30 IST.
+    """
+    if s.ts.time() >= NSE_NEW_ENTRY_CUTOFF:
+        return None
+
+    regime = classify_regime(s)
+
+    if regime == Regime.TREND_BULL:
+        # ORB breakout
+        if s.orb_high is not None and s.price > s.orb_high:
+            sig = make_signal(s, Segment.NSE_INTRADAY, Setup.ORB_BREAKOUT, "BUY")
+            if sig:
+                return sig
+        # Momentum continuation
+        if s.price >= s.vwap and s.momentum_5m > 0:
+            sig = make_signal(s, Segment.NSE_INTRADAY, Setup.MOMENTUM_CONTINUATION, "BUY")
+            if sig:
+                return sig
+        # VWAP reclaim (pullback to VWAP, bounce)
+        if s.atr > 0 and abs(s.price - s.vwap) < 0.5 * s.atr and s.momentum_5m > 0 and s.rsi > 40:
+            sig = make_signal(s, Segment.NSE_INTRADAY, Setup.VWAP_RECLAIM, "BUY", 1.2, 60)
+            if sig:
+                return sig
+
+    elif regime == Regime.TREND_BEAR:
+        # ORB breakdown
+        if s.orb_low is not None and s.price < s.orb_low:
+            sig = make_signal(s, Segment.NSE_INTRADAY, Setup.ORB_BREAKDOWN, "SELL")
+            if sig:
+                return sig
+        # Momentum continuation short
+        if s.price <= s.vwap and s.momentum_5m < 0:
+            sig = make_signal(s, Segment.NSE_INTRADAY, Setup.MOMENTUM_CONTINUATION, "SELL")
+            if sig:
+                return sig
+
+    elif regime == Regime.RANGE:
+        # Mean reversion: oversold bounce
+        if s.atr > 0:
+            d = s.price - s.vwap
+            if d < -1.2 * s.atr and s.rsi < 30 and s.momentum_5m > s.momentum_15m:
+                return make_signal(s, Segment.NSE_INTRADAY, Setup.MEAN_REVERSION, "BUY", 1.0, 60, 1.2)
+            if d > 1.2 * s.atr and s.rsi > 70 and s.momentum_5m < s.momentum_15m:
+                return make_signal(s, Segment.NSE_INTRADAY, Setup.MEAN_REVERSION, "SELL", 1.0, 60, 1.2)
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MCX SESSION MODES + ENTRY
+# ═══════════════════════════════════════════════════════════════════════
+
+def mcx_session_mode(t: time) -> str:
+    """
+    MCX 7-mode session classification.
+
+    Returns the current session phase based on IST time.
+    """
+    if t < time(9, 20):
+        return "WARMUP"
+    if t < time(11, 30):
+        return "PRIMARY"            # Morning primary session
+    if t < time(14, 30):
+        return "SELECTIVE"          # Midday — selective entries only
+    if t < time(15, 15):
+        return "MANAGE_ONLY"        # Pre-close — no new entries
+    if t < time(17, 0):
+        return "DISCOVERY"          # Evening pre-open discovery
+    if t < time(22, 30):
+        return "EVENING_PRIMARY"    # Evening primary session
+    return "LATE_MANAGEMENT"        # Late session — manage only
+
+
+def mcx_intraday(s: Snapshot) -> Optional[Signal]:
+    """
+    MCX intraday signal generation.
+
+    Respects session modes — no entries during WARMUP, MANAGE_ONLY,
+    or LATE_MANAGEMENT phases.
+    """
+    mode = mcx_session_mode(s.ts.time())
+    if mode in ("WARMUP", "MANAGE_ONLY", "LATE_MANAGEMENT"):
+        return None
+
+    if s.spread_ticks > MAX_SPREAD_TICKS or s.atr <= 0:
+        return None
+
+    regime = classify_regime(s)
+
+    if regime == Regime.TREND_BULL:
+        orb_break = s.orb_high is not None and s.price > s.orb_high
+        pullback = s.price >= s.vwap and s.momentum_5m > 0
+        if orb_break or pullback:
+            setup = Setup.ORB_BREAKOUT if orb_break else Setup.PULLBACK_CONTINUATION
+            return make_signal(s, Segment.MCX, setup, "BUY")
+
+    elif regime == Regime.TREND_BEAR:
+        orb_break = s.orb_low is not None and s.price < s.orb_low
+        pullback = s.price <= s.vwap and s.momentum_5m < 0
+        if orb_break or pullback:
+            setup = Setup.ORB_BREAKDOWN if orb_break else Setup.PULLBACK_CONTINUATION
+            return make_signal(s, Segment.MCX, setup, "SELL")
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SWING ENTRY
+# ═══════════════════════════════════════════════════════════════════════
+
+def swing_signal(s: Snapshot) -> Optional[Signal]:
+    """Swing (multi-day) signal — requires strong trend + RS confirmation."""
+    regime = classify_regime(s)
+    if regime not in (Regime.TREND_BULL, Regime.TREND_BEAR):
+        return None
+
+    direction = "BUY" if regime == Regime.TREND_BULL else "SELL"
+    rs = s.stock_rs if direction == "BUY" else -s.stock_rs
+    sec = s.sector_rs if direction == "BUY" else -s.sector_rs
+
+    if rs < 0.5 or sec < 0:
+        return None
+
+    orb_break = ((direction == "BUY" and s.orb_high and s.price > s.orb_high)
+                 or (direction == "SELL" and s.orb_low and s.price < s.orb_low))
+    setup = Setup.SWING_BREAKOUT if orb_break else Setup.SWING_PULLBACK
+
+    return make_signal(s, Segment.SWING, setup, direction, 2, 70, 2, room_multiplier=4.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# POSITION MANAGEMENT — GIVEBACK-BASED
+# ═══════════════════════════════════════════════════════════════════════
+
+def update_position(p: ManagedPosition, price: float) -> PositionAction:
+    """
+    V10.1 position management — giveback-based tightening.
+
+    CRITICAL PRINCIPLE: TIGHTEN = tighten protection (move SL),
+    it is NOT an automatic exit. Only EXIT on hard stop hit.
+
+    Tightening schedule:
+      peak_r >= 1.0 and giveback >= 0.35R → TIGHTEN
+      peak_r >= 1.5 and giveback >= 0.45R → TIGHTEN
+      peak_r >= 2.0 and giveback >= 0.60R → TIGHTEN
+
+    Returns:
+      HOLD          — no action needed
+      TIGHTEN       — move broker SL tighter
+      EXIT          — hard stop hit or invalid state
+      CONFIRM_ADD   — early entry confirmed, add remaining position
+    """
+    risk = p.risk_per_share
+    if risk <= 0:
+        return PositionAction.EXIT
+
+    # Update peak/trough and R values
+    if p.side == "BUY":
+        if p.peak_price == 0:
+            p.peak_price = price
+        p.peak_price = max(p.peak_price, price)
+        if p.trough_price == 0:
+            p.trough_price = price
+        p.trough_price = min(p.trough_price, price)
+        move = price - p.entry_price
+        p.mfe = max(p.mfe, max(0, price - p.entry_price))
+        p.mae = max(p.mae, max(0, p.entry_price - price))
+    else:
+        if p.trough_price == 0:
+            p.trough_price = price
+        p.trough_price = min(p.trough_price, price)
+        if p.peak_price == 0:
+            p.peak_price = price
+        p.peak_price = max(p.peak_price, price)
+        move = p.entry_price - price
+        p.mfe = max(p.mfe, max(0, p.entry_price - price))
+        p.mae = max(p.mae, max(0, price - p.entry_price))
+
+    p.current_r = move / risk
+    p.peak_r = max(p.peak_r, p.current_r)
+    p.giveback_r = max(0, p.peak_r - p.current_r)
+
+    # --- Hard stop check ---
+    if p.side == "BUY" and price <= p.stop_price:
+        return PositionAction.EXIT
+    if p.side == "SELL" and price >= p.stop_price:
+        return PositionAction.EXIT
+
+    # --- Early entry confirmation check ---
+    if not p.confirmed and p.entry_type == EntryType.EARLY:
+        if p.current_r >= 0.5:  # Half R in our favor = confirmation
+            p.confirmed = True
+            return PositionAction.CONFIRM_ADD
+
+    # --- Giveback-based tightening ---
+    # Only tighten if we haven't already tightened at this level
+    if p.peak_r >= 2.0 and p.giveback_r >= 0.60 and p.last_tighten_r < 2.0:
+        p.last_tighten_r = 2.0
+        return PositionAction.TIGHTEN
+    if p.peak_r >= 1.5 and p.giveback_r >= 0.45 and p.last_tighten_r < 1.5:
+        p.last_tighten_r = 1.5
+        return PositionAction.TIGHTEN
+    if p.peak_r >= 1.0 and p.giveback_r >= 0.35 and p.last_tighten_r < 1.0:
+        p.last_tighten_r = 1.0
+        return PositionAction.TIGHTEN
+
+    return PositionAction.HOLD
+
+
+def compute_tightened_stop(p: ManagedPosition) -> float:
+    """
+    Calculate the new stop price when TIGHTEN is triggered.
+
+    Progressive protection milestones:
+      peak >= 1.0R → protect at entry (breakeven)
+      peak >= 1.5R → protect at 0.75R
+      peak >= 2.0R → protect at 1.25R
+      peak >= 2.5R → protect at 1.75R
+      peak >= 3.0R → protect at 2.25R
+    """
+    risk = p.risk_per_share
+    protect_r = 0.0
+
+    if p.peak_r >= 3.0:
+        protect_r = 2.25
+    elif p.peak_r >= 2.5:
+        protect_r = 1.75
+    elif p.peak_r >= 2.0:
+        protect_r = 1.25
+    elif p.peak_r >= 1.5:
+        protect_r = 0.75
+    elif p.peak_r >= 1.0:
+        protect_r = 0.0  # Breakeven
+
+    if p.side == "BUY":
+        new_stop = p.entry_price + (protect_r * risk)
+    else:
+        new_stop = p.entry_price - (protect_r * risk)
+
+    return round(new_stop, 2)
+
+
+def force_nse_intraday_exit(p: ManagedPosition, now: datetime) -> bool:
+    """Check if NSE intraday position must be squared off."""
+    return p.segment == Segment.NSE_INTRADAY and now.time() >= NSE_MANDATORY_EXIT
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# POSITION SIZING
+# ═══════════════════════════════════════════════════════════════════════
+
+def size_by_risk(
+    equity: float,
+    risk_pct: float,
+    entry: float,
+    stop: float,
+    unit_value: float = 1.0,
+    position_pct: float = 1.0,
+) -> int:
+    """
+    Calculate position size based on risk percentage of equity.
+
+    Args:
+        equity: Account equity
+        risk_pct: Fraction of equity to risk (e.g., 0.005 = 0.5%)
+        entry: Entry price
+        stop: Stop price
+        unit_value: Contract multiplier (1 for stocks, lot_size for futures)
+        position_pct: V10.1 — 0.30 for early entries, 1.0 for normal
+
+    Returns:
+        Number of units/shares to trade (integer)
+    """
+    per_unit = abs(entry - stop) * unit_value
+    if per_unit <= 0:
+        return 0
+    full_size = int((equity * max(0, risk_pct)) // per_unit)
+    return max(0, int(full_size * position_pct))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# POSITION PERSISTENCE
+# ═══════════════════════════════════════════════════════════════════════
+
+def save_positions(positions: List[ManagedPosition], filepath: str = POSITION_STATE_FILE):
+    """Persist position state to survive restarts."""
+    data = [p.to_dict() for p in positions]
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception as e:
+        log.error(f"Failed to save positions: {e}")
+
+
+def load_positions(filepath: str = POSITION_STATE_FILE) -> List[ManagedPosition]:
+    """Load persisted position state after restart."""
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath) as f:
+            data = json.load(f)
+        return [ManagedPosition.from_dict(d) for d in data]
+    except Exception as e:
+        log.error(f"Failed to load positions: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# BACKWARD COMPATIBILITY — V8.5.5 INTERFACE
+# ═══════════════════════════════════════════════════════════════════════
+
+def acceleration_score(snapshot_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    V8.5.5 backward-compatible entry scoring interface.
+
+    Accepts the dict format that trading_bot_v84.py passes:
+        {symbol, price, vwap, atr, mom5, mom15, rvol, rs_val, sector_rs,
+         orb_high, orb_low, volume, avg_volume, side, ...}
+
+    Returns dict compatible with V8.5.5:
+        {score, acceleration_detected, early_entry, setup_type, direction,
+         expected_r, room_atr, regime, move_stage, entry_type, position_pct, ...}
+    """
+    try:
+        # Build Snapshot from V8.4 dict format
+        s = Snapshot(
+            symbol=snapshot_dict.get("symbol", "UNKNOWN"),
+            ts=snapshot_dict.get("ts", datetime.now()),
+            price=float(snapshot_dict.get("price", 0)),
+            atr=float(snapshot_dict.get("atr", 0)),
+            vwap=float(snapshot_dict.get("vwap", 0)),
+            adx=float(snapshot_dict.get("adx", 20)),
+            adx_slope=float(snapshot_dict.get("adx_slope", 0)),
+            choppiness=float(snapshot_dict.get("choppiness", 50)),
+            atr_percentile=float(snapshot_dict.get("atr_percentile", 50)),
+            rsi=float(snapshot_dict.get("rsi", 50)),
+            rvol=float(snapshot_dict.get("rvol", 1.0)),
+            momentum_5m=float(snapshot_dict.get("mom5", snapshot_dict.get("momentum_5m", 0))),
+            momentum_15m=float(snapshot_dict.get("mom15", snapshot_dict.get("momentum_15m", 0))),
+            sector_rs=float(snapshot_dict.get("sector_rs", 0)),
+            stock_rs=float(snapshot_dict.get("rs_val", snapshot_dict.get("stock_rs", 0))),
+            volume_acceleration=float(snapshot_dict.get("volume_acceleration", 0)),
+            spread_ticks=float(snapshot_dict.get("spread_ticks", 0)),
+            orb_high=snapshot_dict.get("orb_high"),
+            orb_low=snapshot_dict.get("orb_low"),
+            prior_high=snapshot_dict.get("prior_high", snapshot_dict.get("orb_high")),
+            prior_low=snapshot_dict.get("prior_low", snapshot_dict.get("orb_low")),
+        )
+
+        direction = snapshot_dict.get("side", snapshot_dict.get("direction", "BUY"))
+        segment_str = snapshot_dict.get("segment", "NSE_INTRADAY")
+        segment = Segment.MCX if "MCX" in segment_str.upper() else Segment.NSE_INTRADAY
+
+        # Run V10.1 signal generation
+        if segment == Segment.MCX:
+            signal = mcx_intraday(s)
+        else:
+            signal = nse_intraday(s)
+
+        if signal:
+            return {
+                "score": signal.score,
+                "timing_score": signal.timing_score,
+                "acceleration_detected": True,
+                "early_entry": signal.entry_type == EntryType.EARLY,
+                "setup_type": signal.setup.value,
+                "direction": signal.direction,
+                "expected_r": signal.expected_r,
+                "room_atr": signal.room_atr,
+                "regime": signal.regime.value,
+                "move_stage": signal.move_stage.value,
+                "entry_type": signal.entry_type.value,
+                "position_pct": signal.position_pct,
+                "stop": signal.stop,
+                "reason": signal.reason,
+            }
+        else:
+            # No signal — return rejection
+            bscore = base_score(s, direction)
+            tscore = timing_score(s, direction)
+            stage = classify_move_stage(s, direction)
+            return {
+                "score": bscore,
+                "timing_score": tscore,
+                "acceleration_detected": False,
+                "early_entry": False,
+                "setup_type": "NONE",
+                "direction": direction,
+                "expected_r": 0,
+                "room_atr": room_atr(s, direction),
+                "regime": classify_regime(s).value,
+                "move_stage": stage.value,
+                "entry_type": "REJECTED",
+                "position_pct": 0,
+                "reason": f"REJECTED: score={bscore:.0f} timing={tscore:.0f} stage={stage.value}",
+            }
+
+    except Exception as e:
+        log.error(f"acceleration_score error: {e}")
+        return {"score": 0, "acceleration_detected": False, "early_entry": False,
+                "setup_type": "ERROR", "reason": str(e)}
+
+
+def profit_fading_exit(snapshot_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    V8.5.5 backward-compatible exit evaluation interface.
+
+    Accepts:
+        {price, entry_price, sl, initial_sl, side, peak, best_r, peak_r,
+         giveback_r, mfe, mae, last_tighten_r, entry_type, confirmed, ...}
+
+    Returns:
+        {action: "HOLD"|"TIGHTEN"|"EXIT"|"CONFIRM_ADD",
+         new_stop: float (if TIGHTEN),
+         peak_r, giveback_r, current_r, mfe, mae}
+    """
+    try:
+        price = float(snapshot_dict.get("price", 0))
+        entry = float(snapshot_dict.get("entry_price", 0))
+        stop = float(snapshot_dict.get("sl", snapshot_dict.get("stop_price", 0)))
+        initial_sl = float(snapshot_dict.get("initial_sl", stop))
+        side = snapshot_dict.get("side", "BUY")
+
+        # Build ManagedPosition from V8.4 dict
+        p = ManagedPosition(
+            symbol=snapshot_dict.get("symbol", ""),
+            segment=Segment.NSE_INTRADAY,
+            side=side,
+            quantity=int(snapshot_dict.get("qty", 1)),
+            entry_price=entry,
+            stop_price=stop,
+            initial_stop=initial_sl,
+            entry_time=datetime.now(),
+            entry_type=EntryType(snapshot_dict.get("entry_type", "NORMAL")),
+            position_pct=float(snapshot_dict.get("position_pct", 1.0)),
+            confirmed=snapshot_dict.get("confirmed", True),
+            peak_price=float(snapshot_dict.get("peak", 0)),
+            peak_r=float(snapshot_dict.get("peak_r", snapshot_dict.get("best_r", 0))),
+            giveback_r=float(snapshot_dict.get("giveback_r", 0)),
+            mfe=float(snapshot_dict.get("mfe", 0)),
+            mae=float(snapshot_dict.get("mae", 0)),
+            last_tighten_r=float(snapshot_dict.get("last_tighten_r", 0)),
+        )
+
+        action = update_position(p, price)
+
+        result = {
+            "action": action.value,
+            "peak_r": round(p.peak_r, 3),
+            "current_r": round(p.current_r, 3),
+            "giveback_r": round(p.giveback_r, 3),
+            "mfe": round(p.mfe, 2),
+            "mae": round(p.mae, 2),
+            "last_tighten_r": p.last_tighten_r,
+            # V8.5.5 compat fields
+            "exit_now": action == PositionAction.EXIT,
+            "profit_fading": action == PositionAction.TIGHTEN,
+            "confirm_add": action == PositionAction.CONFIRM_ADD,
+        }
+
+        if action == PositionAction.TIGHTEN:
+            result["new_stop"] = compute_tightened_stop(p)
+
+        return result
+
+    except Exception as e:
+        log.error(f"profit_fading_exit error: {e}")
+        return {"action": "HOLD", "exit_now": False, "profit_fading": False,
+                "reason": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SELF-TESTS
+# ═══════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    print("V10.1 Strategy Patch — Self Tests")
+    print("=" * 50)
+
+    passed = 0
+    failed = 0
+
+    def test(name, condition):
+        global passed, failed
+        if condition:
+            print(f"  ✅ {name}")
+            passed += 1
+        else:
+            print(f"  ❌ {name}")
+            failed += 1
+
+    # --- Risk Governor ---
+    print("\n[Risk Governor]")
+    rg = RiskGovernor()
+    r1 = AccountRisk(100000, -2000, 0, 0)
+    test("2% loss locks entries", not rg.allow_new_entry(r1))
+    r2 = AccountRisk(100000, -1000, 0, 0)
+    test("1% loss does NOT lock", rg.allow_new_entry(r2))
+    r3 = AccountRisk(100000, -500, -800, 0)
+    test("1.3% combined does NOT lock", rg.allow_new_entry(r3))
+
+    # --- Regime Classification ---
+    print("\n[Regime Classification]")
+    s_trend = Snapshot("TEST", datetime.now(), 105, 2, 100,
+                       adx=30, adx_slope=2, choppiness=35, atr_percentile=60,
+                       momentum_15m=2.0)
+    test("Trend Bull", classify_regime(s_trend) == Regime.TREND_BULL)
+
+    s_shock = Snapshot("TEST", datetime.now(), 105, 2, 100,
+                       atr_percentile=96, volume_acceleration=3)
+    test("Shock detected", classify_regime(s_shock) == Regime.SHOCK)
+
+    s_range = Snapshot("TEST", datetime.now(), 100, 2, 100,
+                       adx=15, choppiness=50, atr_percentile=50)
+    test("Range detected", classify_regime(s_range) == Regime.RANGE)
+
+    # --- Move Stage Classification (V10.1) ---
+    print("\n[V10.1 Move Stage Classification]")
+    s_normal = Snapshot("TEST", datetime.now(), 103, 2, 100)
+    test("Normal (< 2 ATR)", classify_move_stage(s_normal, "BUY") == MoveStage.NORMAL)
+
+    s_early = Snapshot("TEST", datetime.now(), 110, 2, 100,
+                       rvol=3.0, stock_rs=2.0, momentum_5m=2.0, momentum_15m=1.5,
+                       volume_acceleration=2.0, sector_rs=1.5)
+    test("Early Entry (extended + strong)", classify_move_stage(s_early, "BUY") == MoveStage.EARLY_ENTRY)
+
+    s_exhausted = Snapshot("TEST", datetime.now(), 110, 2, 100,
+                           rvol=0.5, stock_rs=-1.0, momentum_5m=-0.5, momentum_15m=-0.3,
+                           volume_acceleration=0.3)
+    test("Exhausted (extended + weak)", classify_move_stage(s_exhausted, "BUY") == MoveStage.EXHAUSTED)
+
+    s_late_cont = Snapshot("TEST", datetime.now(), 110, 2, 100,
+                           rvol=2.0, stock_rs=0.8, momentum_5m=1.0, momentum_15m=0.8,
+                           volume_acceleration=1.0)
+    test("Late Continuation (extended + healthy)", classify_move_stage(s_late_cont, "BUY") == MoveStage.LATE_CONTINUATION)
+
+    # --- Signal Generation ---
+    print("\n[Signal Generation]")
+    s_good = Snapshot("WABAG", datetime(2026, 8, 26, 10, 0), 103, 2, 100,
+                      adx=30, adx_slope=2, choppiness=35, atr_percentile=60,
+                      rsi=60, rvol=3, momentum_5m=1.5, momentum_15m=2.0,
+                      sector_rs=1.5, stock_rs=2.0, volume_acceleration=2,
+                      orb_high=101, orb_low=97, prior_high=108, prior_low=97)
+    sig = nse_intraday(s_good)
+    test("NSE signal generated", sig is not None)
+    if sig:
+        test("Direction is BUY", sig.direction == "BUY")
+        test("Entry type NORMAL (not extended)", sig.entry_type == EntryType.NORMAL)
+        test("Position pct = 1.0", sig.position_pct == 1.0)
+
+    # Early entry signal
+    s_extended_strong = Snapshot("IDBI", datetime(2026, 8, 26, 10, 0), 110, 2, 100,
+                                 adx=30, adx_slope=2, choppiness=35, atr_percentile=60,
+                                 rsi=60, rvol=3, momentum_5m=2.0, momentum_15m=2.0,
+                                 sector_rs=1.5, stock_rs=2.0, volume_acceleration=2,
+                                 orb_high=103, orb_low=97, prior_high=115, prior_low=97)
+    sig2 = nse_intraday(s_extended_strong)
+    test("Extended strong → signal generated", sig2 is not None)
+    if sig2:
+        test("Entry type is EARLY", sig2.entry_type == EntryType.EARLY)
+        test("Position pct = 0.30", sig2.position_pct == EARLY_ENTRY_POSITION_PCT)
+
+    # Cutoff test
+    s_late = Snapshot("TEST", datetime(2026, 8, 26, 14, 31), 105, 2, 100,
+                      adx=30, adx_slope=2, momentum_15m=2.0, orb_high=103)
+    test("14:31 cutoff → no signal", nse_intraday(s_late) is None)
+
+    # --- Position Management ---
+    print("\n[Position Management — Giveback]")
+    p = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                        100.0, 98.0, 98.0, datetime.now())
+
+    # Move to 1.5R peak
+    action = update_position(p, 103.0)  # 1.5R
+    test("At 1.5R: HOLD", action == PositionAction.HOLD)
+
+    # Give back to 1.0R (0.5R giveback from 1.5R peak)
+    action = update_position(p, 102.0)  # 1.0R, giveback = 0.5R, peak was 1.5R
+    test("At 1.0R (0.5R giveback from 1.5R): TIGHTEN", action == PositionAction.TIGHTEN)
+
+    # Move to 2.5R peak
+    p2 = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                         100.0, 98.0, 98.0, datetime.now())
+    update_position(p2, 105.0)  # 2.5R
+    action2 = update_position(p2, 103.8)  # 1.9R, giveback = 0.6R from 2.5R
+    test("At 1.9R (0.6R giveback from 2.5R peak): TIGHTEN", action2 == PositionAction.TIGHTEN)
+
+    # Hard stop hit
+    p3 = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                         100.0, 98.0, 98.0, datetime.now())
+    action3 = update_position(p3, 97.5)
+    test("Below stop → EXIT", action3 == PositionAction.EXIT)
+
+    # Early entry confirmation
+    p4 = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                         100.0, 98.0, 98.0, datetime.now(),
+                         entry_type=EntryType.EARLY, confirmed=False)
+    action4 = update_position(p4, 101.0)  # 0.5R
+    test("Early entry at 0.5R → CONFIRM_ADD", action4 == PositionAction.CONFIRM_ADD)
+    test("Position now confirmed", p4.confirmed)
+
+    # --- Tightened stop calculation ---
+    print("\n[Stop Tightening]")
+    p5 = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                         100.0, 98.0, 98.0, datetime.now(), peak_r=2.0)
+    new_stop = compute_tightened_stop(p5)
+    test(f"Peak 2.0R → stop at 1.25R = {100 + 1.25*2} = 102.5", new_stop == 102.5)
+
+    p6 = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                         100.0, 98.0, 98.0, datetime.now(), peak_r=1.0)
+    new_stop6 = compute_tightened_stop(p6)
+    test(f"Peak 1.0R → breakeven stop = 100.0", new_stop6 == 100.0)
+
+    # --- Position sizing ---
+    print("\n[Position Sizing]")
+    qty = size_by_risk(100000, 0.005, 100, 98, 1, 1.0)
+    test(f"Full size: Rs.100K, 0.5% risk, Rs.2 per share = 250 shares", qty == 250)
+
+    qty_early = size_by_risk(100000, 0.005, 100, 98, 1, 0.30)
+    test(f"Early size (30%): 250 * 0.30 = 75 shares", qty_early == 75)
+
+    # --- MCX Session Modes ---
+    print("\n[MCX Session Modes]")
+    test("9:00 = WARMUP", mcx_session_mode(time(9, 0)) == "WARMUP")
+    test("10:00 = PRIMARY", mcx_session_mode(time(10, 0)) == "PRIMARY")
+    test("12:00 = SELECTIVE", mcx_session_mode(time(12, 0)) == "SELECTIVE")
+    test("15:00 = MANAGE_ONLY", mcx_session_mode(time(15, 0)) == "MANAGE_ONLY")
+    test("16:00 = DISCOVERY", mcx_session_mode(time(16, 0)) == "DISCOVERY")
+    test("18:00 = EVENING_PRIMARY", mcx_session_mode(time(18, 0)) == "EVENING_PRIMARY")
+    test("23:00 = LATE_MANAGEMENT", mcx_session_mode(time(23, 0)) == "LATE_MANAGEMENT")
+
+    # --- Backward Compatibility ---
+    print("\n[Backward Compatibility]")
+    compat_dict = {
+        "symbol": "WABAG", "price": 105, "vwap": 100, "atr": 2,
+        "mom5": 1.5, "mom15": 2.0, "rvol": 3.0, "rs_val": 2.0,
+        "sector_rs": 1.5, "volume_acceleration": 2.0,
+        "orb_high": 103, "orb_low": 97, "side": "BUY",
+        "adx": 30, "adx_slope": 2, "choppiness": 35, "atr_percentile": 60,
+        "ts": datetime(2026, 8, 26, 10, 0),
+        "prior_high": 108,
+    }
+    result = acceleration_score(compat_dict)
+    test("acceleration_score returns dict", isinstance(result, dict))
+    test("acceleration_detected = True", result.get("acceleration_detected") == True)
+    test("Has entry_type", "entry_type" in result)
+    test("Has position_pct", "position_pct" in result)
+
+    exit_dict = {
+        "symbol": "WABAG", "price": 104, "entry_price": 100,
+        "sl": 98, "initial_sl": 98, "side": "BUY",
+        "peak": 105, "best_r": 2.5, "peak_r": 2.5,
+        "giveback_r": 0.0, "mfe": 5.0, "mae": 0.5,
+        "last_tighten_r": 0, "entry_type": "NORMAL", "confirmed": True,
+    }
+    exit_result = profit_fading_exit(exit_dict)
+    test("profit_fading_exit returns dict", isinstance(exit_result, dict))
+    test("Has action field", "action" in exit_result)
+
+    # --- Mandatory exit ---
+    print("\n[Mandatory Exit]")
+    p_nse = ManagedPosition("TEST", Segment.NSE_INTRADAY, "BUY", 100,
+                            100.0, 98.0, 98.0, datetime.now())
+    test("15:05 → force exit", force_nse_intraday_exit(p_nse, datetime(2026, 8, 26, 15, 5)))
+    test("14:30 → no force", not force_nse_intraday_exit(p_nse, datetime(2026, 8, 26, 14, 30)))
+
+    # --- Summary ---
+    print(f"\n{'=' * 50}")
+    print(f"Results: {passed} passed, {failed} failed")
+    if failed == 0:
+        print("ALL TESTS PASSED ✅")
+    else:
+        print("SOME TESTS FAILED ❌")

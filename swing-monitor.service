@@ -1,0 +1,17 @@
+[Unit]
+Description=NSE Swing Monitor (paper) - live LTP monitor + exits
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-bot
+ExecStart=/home/ubuntu/trading-bot/venv/bin/python3 /home/ubuntu/trading-bot/swing_monitor.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/ubuntu/trading-bot/swing_logs/monitor.out.log
+StandardError=append:/home/ubuntu/trading-bot/swing_logs/monitor.err.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+--- v82_dhan_gateway.py
++++ v82_dhan_gateway_v854.py
+@@ -150,7 +150,8 @@
+         return self._request("POST", "/margincalculator", {"dhanClientId":self.client_id,"exchangeSegment":"NSE_EQ","transactionType":transaction_type,"securityId":str(security_id),"quantity":int(qty),"productType":"INTRADAY","orderType":"MARKET","price":float(price or 0)}, kind="order")
+ 
+     def place_order(self, security_id, qty, price=0, transaction_type="BUY", order_type="MARKET", trigger_price=0, correlation_id=None):
+-        payload={"dhanClientId":self.client_id,"correlationId":correlation_id or ("V82-"+uuid.uuid4().hex[:20]),"transactionType":transaction_type,"exchangeSegment":"NSE_EQ","productType":"INTRADAY","orderType":order_type,"validity":"DAY","securityId":str(security_id),"quantity":int(qty),"disclosedQuantity":0,"price":float(trigger_price if trigger_price and "STOP" in order_type.upper() else (price or 0)),"triggerPrice":float(trigger_price or 0),"afterMarketOrder":False}
++        is_slm=str(order_type).upper()=="STOP_LOSS_MARKET"
++        payload={"dhanClientId":self.client_id,"correlationId":correlation_id or ("V82-"+uuid.uuid4().hex[:20]),"transactionType":transaction_type,"exchangeSegment":"NSE_EQ","productType":"INTRADAY","orderType":order_type,"validity":"DAY","securityId":str(security_id),"quantity":int(qty),"disclosedQuantity":0,"price":0.0 if is_slm else float(price or 0),"triggerPrice":float(trigger_price or 0),"afterMarketOrder":False}
+         return self._request("POST", "/orders", payload, kind="order")
+ 
+     def get_order_status(self, order_id):
+@@ -164,6 +165,18 @@
+             return d
+         return r or {}
+     def get_trades_for_order(self, order_id): return self._request("GET", f"/trades/{order_id}", kind="order")
++    def get_orders(self):
++        r=self._request("GET", "/orders", kind="order") or []
++        if isinstance(r,dict): return r.get("data",r.get("orders",[])) or []
++        return r
++    def get_trades(self):
++        r=self._request("GET", "/trades", kind="order") or []
++        if isinstance(r,dict): return r.get("data",r.get("trades",[])) or []
++        return r
++    def get_order_by_correlation(self, correlation_id):
++        r=self._request("GET", f"/orders/external/{correlation_id}", kind="order") or {}
++        if isinstance(r,dict) and "data" in r and isinstance(r["data"],dict): return r["data"]
++        return r
+     def get_positions(self): return self._request("GET", "/positions", kind="nontrade")
+     def cancel_order(self, order_id): return self._request("DELETE", f"/orders/{order_id}", kind="order")
+ 

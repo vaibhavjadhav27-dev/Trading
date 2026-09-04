@@ -1,0 +1,8 @@
+.env
+config.json
+*.log
+logs/
+__pycache__/
+*.tgz
+*.docx
+

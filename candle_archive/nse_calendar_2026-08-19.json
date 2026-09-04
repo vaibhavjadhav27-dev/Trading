@@ -1,0 +1,76 @@
+{
+  "date": "2026-08-19",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "desc": "Options to purchase securities",
+      "an_dt": "19-Aug-2026 18:54:35",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "TATACAP",
+      "company": "Tata Capital Limited",
+      "desc": "Shareholders meeting",
+      "an_dt": "19-Aug-2026 18:53:11",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "desc": "Updates",
+      "an_dt": "19-Aug-2026 18:51:21",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "GPIL",
+      "company": "Godawari Power And Ispat limited",
+      "desc": "Disclosure under SEBI Takeover Regulations",
+      "an_dt": "19-Aug-2026 18:51:10",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "FEDERALBNK",
+      "company": "The Federal Bank  Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "19-Aug-2026 18:51:02",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "RBLBANK",
+      "company": "RBL Bank Limited",
+      "desc": "Analysts/Institutional Investor Meet/Con. Call Updates",
+      "an_dt": "19-Aug-2026 18:50:47",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "GULFOILLUB",
+      "company": "Gulf Oil Lubricants India Limited",
+      "desc": "Updates",
+      "an_dt": "19-Aug-2026 18:47:21",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "FEDERALBNK",
+      "company": "The Federal Bank  Limited",
+      "purpose": "Fund Raising",
+      "date": "21-Aug-2026"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "company": "ICICI Bank Limited",
+      "purpose": "Fund Raising",
+      "date": "21-Aug-2026"
+    },
+    {
+      "symbol": "SIGACHI",
+      "company": "Sigachi Industries Limited",
+      "purpose": "Fund Raising",
+      "date": "22-Aug-2026"
+    }
+  ]
+}

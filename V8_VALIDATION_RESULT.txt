@@ -1,0 +1,29 @@
+TRADING BOT V8.0 VALIDATION RESULT
+Date: 2026-08-12
+
+Command executed:
+  python3 validate_v8.py
+
+RESULT:
+  ALL V8 OFFLINE TESTS PASSED
+
+Validated:
+- 100-point directional scoring
+- 60/70/71/80/81 conviction boundaries
+- 1x / 2x / 4.5x deployment tiers
+- LONG and SHORT side selection
+- bullish/bearish/normal/choppy regimes
+- choppy low-edge WAIT
+- >=0.40% expected-move gate
+- sudden-move eligibility
+- 30-minute NIFTY/sector snapshot persistence
+- trading_bot import without Dhan SDK installed locally
+- mocked LONG fill and broker-position reconciliation
+- mocked SHORT fill and broker-position reconciliation
+- server-side SL protection path
+- SL failure emergency-exit path
+- all Python modules compile
+
+LIVE LIMITATION:
+No real Dhan order or AWS transaction was executed in this environment.
+Live credentials/static-IP/network connectivity must be validated on the EC2 host.
