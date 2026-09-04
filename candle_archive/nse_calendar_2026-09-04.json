@@ -1,0 +1,47 @@
+{
+  "date": "2026-09-04",
+  "watchlist_size": 555,
+  "today_filings_classified": [
+    {
+      "symbol": "WELSPUNLIV",
+      "company": "Welspun Living Limited",
+      "desc": "General Updates",
+      "an_dt": "04-Sep-2026 17:55:48",
+      "sentiment": "NONRESULTS"
+    },
+    {
+      "symbol": "SUPREMEIND",
+      "company": "Supreme Industries Limited",
+      "desc": "Disclosure under SEBI Takeover Regulations",
+      "an_dt": "04-Sep-2026 17:55:20",
+      "sentiment": "NONRESULTS"
+    }
+  ],
+  "today_results_yoy_classified": [],
+  "upcoming_board_meetings": [
+    {
+      "symbol": "OLAELEC",
+      "company": "Ola Electric Mobility Limited",
+      "purpose": "Fund Raising",
+      "date": "05-Sep-2026"
+    },
+    {
+      "symbol": "PNBHOUSING",
+      "company": "PNB Housing Finance Limited",
+      "purpose": "Fund Raising/Other business matters",
+      "date": "07-Sep-2026"
+    },
+    {
+      "symbol": "RBLBANK",
+      "company": "RBL Bank Limited",
+      "purpose": "Fund Raising",
+      "date": "07-Sep-2026"
+    },
+    {
+      "symbol": "RAYMOND",
+      "company": "Raymond Limited",
+      "purpose": "Fund Raising",
+      "date": "08-Sep-2026"
+    }
+  ]
+}
